@@ -1,0 +1,42 @@
+{
+  "groups": [
+    { "id": "10-A", "students_count": 28 },
+    { "id": "10-B", "students_count": 27 }
+  ],
+  "subjects": [
+    { "id": "math", "name": "Математика", "difficulty": 3 },
+    { "id": "physics", "name": "Фізика", "requires_specialized": true },
+    {
+      "id": "informatics",
+      "name": "Інформатика",
+      "requires_specialized": true,
+      "classroom_type": "computer_lab"
+    }
+  ],
+  "teachers": [
+    { "id": "T001", "name": "Іваненко І.І.", "subjects": ["math"] },
+    { "id": "T002", "name": "Петрова О.О.", "subjects": ["physics"] },
+    { "id": "T003", "name": "Сидоренко С.С.", "subjects": ["informatics"] }
+  ],
+  "classrooms": [
+    { "id": "101", "capacity": 30, "type": "general" },
+    { "id": "PhysLab", "capacity": 20, "type": "physics_lab" },
+    { "id": "Comp", "capacity": 25, "type": "computer_lab" }
+  ],
+  "lessons_pool": [
+    { "subject": "math", "teacher": "T001", "group": "10-A", "count": 4 },
+    { "subject": "math", "teacher": "T001", "group": "10-B", "count": 4 },
+    { "subject": "physics", "teacher": "T002", "group": "10-A", "count": 2 },
+    { "subject": "informatics", "teacher": "T003", "group": "10-B", "count": 2 }
+  ],
+  "existing_schedule": [
+    {
+      "subject": "math",
+      "teacher": "T001",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 0,
+      "slot_index": 0
+    }
+  ]
+}

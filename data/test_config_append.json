@@ -1,0 +1,25 @@
+{
+  "mode": "append",
+  "planning_period_weeks": 2,
+  "max_lessons_per_day": 6,
+  "time_slots": [
+    "08:00-08:45",
+    "08:55-09:40",
+    "09:50-10:35",
+    "10:45-11:30",
+    "11:40-12:25",
+    "12:35-13:20",
+    "13:30-14:15"
+  ],
+  "allow_duplicates": true,
+  "max_duplicates_per_day": 2,
+  "use_specialized_classrooms": true,
+  "optimization_priority": [
+    "preserve_existing",
+    "no_conflicts",
+    "distribute_subjects"
+  ],
+  "allow_gaps": true,
+  "min_gaps": 0,
+  "max_gaps": 3
+}

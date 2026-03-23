@@ -1,0 +1,662 @@
+{
+  "schedule": [
+    {
+      "subject": "ukr_lang",
+      "teacher": "T_UKR1",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 0,
+      "slot_index": 2,
+      "label": "09:50-10:35"
+    },
+    {
+      "subject": "ukr_lang",
+      "teacher": "T_UKR1",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 1,
+      "slot_index": 2,
+      "label": "09:50-10:35"
+    },
+    {
+      "subject": "ukr_lang",
+      "teacher": "T_UKR1",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 2,
+      "slot_index": 2,
+      "label": "09:50-10:35"
+    },
+    {
+      "subject": "ukr_lang",
+      "teacher": "T_UKR1",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 3,
+      "slot_index": 2,
+      "label": "09:50-10:35"
+    },
+    {
+      "subject": "ukr_lang",
+      "teacher": "T_UKR1",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 4,
+      "slot_index": 2,
+      "label": "09:50-10:35"
+    },
+    {
+      "subject": "ukr_lang",
+      "teacher": "T_UKR1",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 5,
+      "slot_index": 2,
+      "label": "09:50-10:35"
+    },
+    {
+      "subject": "ukr_lang",
+      "teacher": "T_UKR1",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 6,
+      "slot_index": 2,
+      "label": "09:50-10:35"
+    },
+    {
+      "subject": "ukr_lang",
+      "teacher": "T_UKR1",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 7,
+      "slot_index": 2,
+      "label": "09:50-10:35"
+    },
+    {
+      "subject": "ukr_lit",
+      "teacher": "T_UKR2",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 8,
+      "slot_index": 2,
+      "label": "09:50-10:35"
+    },
+    {
+      "subject": "ukr_lit",
+      "teacher": "T_UKR2",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 9,
+      "slot_index": 2,
+      "label": "09:50-10:35"
+    },
+    {
+      "subject": "ukr_lit",
+      "teacher": "T_UKR2",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 8,
+      "slot_index": 1,
+      "label": "08:55-09:40"
+    },
+    {
+      "subject": "world_lit",
+      "teacher": "T_WORLD_LIT",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 0,
+      "slot_index": 1,
+      "label": "08:55-09:40"
+    },
+    {
+      "subject": "world_lit",
+      "teacher": "T_WORLD_LIT",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 0,
+      "slot_index": 3,
+      "label": "10:45-11:30"
+    },
+    {
+      "subject": "eng_lang",
+      "teacher": "T_ENG",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 1,
+      "slot_index": 1,
+      "label": "08:55-09:40"
+    },
+    {
+      "subject": "eng_lang",
+      "teacher": "T_ENG",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 1,
+      "slot_index": 3,
+      "label": "10:45-11:30"
+    },
+    {
+      "subject": "eng_lang",
+      "teacher": "T_ENG",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 2,
+      "slot_index": 1,
+      "label": "08:55-09:40"
+    },
+    {
+      "subject": "eng_lang",
+      "teacher": "T_ENG",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 2,
+      "slot_index": 3,
+      "label": "10:45-11:30"
+    },
+    {
+      "subject": "eng_lang",
+      "teacher": "T_ENG",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 3,
+      "slot_index": 1,
+      "label": "08:55-09:40"
+    },
+    {
+      "subject": "eng_lang",
+      "teacher": "T_ENG",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 3,
+      "slot_index": 3,
+      "label": "10:45-11:30"
+    },
+    {
+      "subject": "math",
+      "teacher": "T_MATH",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 4,
+      "slot_index": 1,
+      "label": "08:55-09:40"
+    },
+    {
+      "subject": "math",
+      "teacher": "T_MATH",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 4,
+      "slot_index": 3,
+      "label": "10:45-11:30"
+    },
+    {
+      "subject": "math",
+      "teacher": "T_MATH",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 5,
+      "slot_index": 1,
+      "label": "08:55-09:40"
+    },
+    {
+      "subject": "math",
+      "teacher": "T_MATH",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 5,
+      "slot_index": 3,
+      "label": "10:45-11:30"
+    },
+    {
+      "subject": "math",
+      "teacher": "T_MATH",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 6,
+      "slot_index": 1,
+      "label": "08:55-09:40"
+    },
+    {
+      "subject": "math",
+      "teacher": "T_MATH",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 6,
+      "slot_index": 3,
+      "label": "10:45-11:30"
+    },
+    {
+      "subject": "math",
+      "teacher": "T_MATH",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 7,
+      "slot_index": 1,
+      "label": "08:55-09:40"
+    },
+    {
+      "subject": "math",
+      "teacher": "T_MATH",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 7,
+      "slot_index": 3,
+      "label": "10:45-11:30"
+    },
+    {
+      "subject": "math",
+      "teacher": "T_MATH",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 9,
+      "slot_index": 1,
+      "label": "08:55-09:40"
+    },
+    {
+      "subject": "math",
+      "teacher": "T_MATH",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 9,
+      "slot_index": 3,
+      "label": "10:45-11:30"
+    },
+    {
+      "subject": "history_ua",
+      "teacher": "T_HIST_UA",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 8,
+      "slot_index": 3,
+      "label": "10:45-11:30"
+    },
+    {
+      "subject": "history_ua",
+      "teacher": "T_HIST_UA",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 8,
+      "slot_index": 0,
+      "label": "08:00-08:45"
+    },
+    {
+      "subject": "history_ua",
+      "teacher": "T_HIST_UA",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 0,
+      "slot_index": 0,
+      "label": "08:00-08:45"
+    },
+    {
+      "subject": "world_history",
+      "teacher": "T_WORLD_HIST",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 1,
+      "slot_index": 0,
+      "label": "08:00-08:45"
+    },
+    {
+      "subject": "world_history",
+      "teacher": "T_WORLD_HIST",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 1,
+      "slot_index": 4,
+      "label": "11:40-12:25"
+    },
+    {
+      "subject": "law_basics",
+      "teacher": "T_LAW",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 2,
+      "slot_index": 0,
+      "label": "08:00-08:45"
+    },
+    {
+      "subject": "civic",
+      "teacher": "T_CIVIC",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 3,
+      "slot_index": 0,
+      "label": "08:00-08:45"
+    },
+    {
+      "subject": "civic",
+      "teacher": "T_CIVIC",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 3,
+      "slot_index": 4,
+      "label": "11:40-12:25"
+    },
+    {
+      "subject": "geography",
+      "teacher": "T_GEO",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 4,
+      "slot_index": 0,
+      "label": "08:00-08:45"
+    },
+    {
+      "subject": "geography",
+      "teacher": "T_GEO",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 4,
+      "slot_index": 4,
+      "label": "11:40-12:25"
+    },
+    {
+      "subject": "geography",
+      "teacher": "T_GEO",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 5,
+      "slot_index": 0,
+      "label": "08:00-08:45"
+    },
+    {
+      "subject": "biology",
+      "teacher": "T_BIO",
+      "group": "10-A",
+      "classroom": "BioLab",
+      "day_index": 6,
+      "slot_index": 0,
+      "label": "08:00-08:45"
+    },
+    {
+      "subject": "biology",
+      "teacher": "T_BIO",
+      "group": "10-A",
+      "classroom": "BioLab",
+      "day_index": 6,
+      "slot_index": 4,
+      "label": "11:40-12:25"
+    },
+    {
+      "subject": "biology",
+      "teacher": "T_BIO",
+      "group": "10-A",
+      "classroom": "BioLab",
+      "day_index": 7,
+      "slot_index": 0,
+      "label": "08:00-08:45"
+    },
+    {
+      "subject": "biology",
+      "teacher": "T_BIO",
+      "group": "10-A",
+      "classroom": "BioLab",
+      "day_index": 7,
+      "slot_index": 4,
+      "label": "11:40-12:25"
+    },
+    {
+      "subject": "physics",
+      "teacher": "T_PHYS",
+      "group": "10-A",
+      "classroom": "PhysLab",
+      "day_index": 9,
+      "slot_index": 0,
+      "label": "08:00-08:45"
+    },
+    {
+      "subject": "physics",
+      "teacher": "T_PHYS",
+      "group": "10-A",
+      "classroom": "PhysLab",
+      "day_index": 9,
+      "slot_index": 4,
+      "label": "11:40-12:25"
+    },
+    {
+      "subject": "physics",
+      "teacher": "T_PHYS",
+      "group": "10-A",
+      "classroom": "PhysLab",
+      "day_index": 0,
+      "slot_index": 4,
+      "label": "11:40-12:25"
+    },
+    {
+      "subject": "physics",
+      "teacher": "T_PHYS",
+      "group": "10-A",
+      "classroom": "PhysLab",
+      "day_index": 2,
+      "slot_index": 4,
+      "label": "11:40-12:25"
+    },
+    {
+      "subject": "chemistry",
+      "teacher": "T_CHEM",
+      "group": "10-A",
+      "classroom": "ChemLab",
+      "day_index": 5,
+      "slot_index": 4,
+      "label": "11:40-12:25"
+    },
+    {
+      "subject": "chemistry",
+      "teacher": "T_CHEM",
+      "group": "10-A",
+      "classroom": "ChemLab",
+      "day_index": 8,
+      "slot_index": 4,
+      "label": "11:40-12:25"
+    },
+    {
+      "subject": "chemistry",
+      "teacher": "T_CHEM",
+      "group": "10-A",
+      "classroom": "ChemLab",
+      "day_index": 5,
+      "slot_index": 5,
+      "label": "12:35-13:20"
+    },
+    {
+      "subject": "chemistry",
+      "teacher": "T_CHEM",
+      "group": "10-A",
+      "classroom": "ChemLab",
+      "day_index": 8,
+      "slot_index": 5,
+      "label": "12:35-13:20"
+    },
+    {
+      "subject": "informatics",
+      "teacher": "T_IT",
+      "group": "10-A",
+      "classroom": "CompLab",
+      "day_index": 0,
+      "slot_index": 5,
+      "label": "12:35-13:20"
+    },
+    {
+      "subject": "informatics",
+      "teacher": "T_IT",
+      "group": "10-A",
+      "classroom": "CompLab",
+      "day_index": 1,
+      "slot_index": 5,
+      "label": "12:35-13:20"
+    },
+    {
+      "subject": "technology",
+      "teacher": "T_TECH",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 2,
+      "slot_index": 5,
+      "label": "12:35-13:20"
+    },
+    {
+      "subject": "technology",
+      "teacher": "T_TECH",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 3,
+      "slot_index": 5,
+      "label": "12:35-13:20"
+    },
+    {
+      "subject": "art",
+      "teacher": "T_ART",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 4,
+      "slot_index": 5,
+      "label": "12:35-13:20"
+    },
+    {
+      "subject": "art",
+      "teacher": "T_ART",
+      "group": "10-A",
+      "classroom": "101",
+      "day_index": 6,
+      "slot_index": 5,
+      "label": "12:35-13:20"
+    },
+    {
+      "subject": "pe",
+      "teacher": "T_PE",
+      "group": "10-A",
+      "classroom": "Gym",
+      "day_index": 7,
+      "slot_index": 5,
+      "label": "12:35-13:20"
+    },
+    {
+      "subject": "pe",
+      "teacher": "T_PE",
+      "group": "10-A",
+      "classroom": "Gym",
+      "day_index": 9,
+      "slot_index": 5,
+      "label": "12:35-13:20"
+    }
+  ],
+  "conflicts": [
+    "Не вдалося розмістити pe для групи 10-A (викладач T_PE)",
+    "Не вдалося розмістити pe для групи 10-A (викладач T_PE)",
+    "Не вдалося розмістити pe для групи 10-A (викладач T_PE)",
+    "Не вдалося розмістити pe для групи 10-A (викладач T_PE)",
+    "Не вдалося розмістити electives для групи 10-A (викладач T_ELECT)",
+    "Не вдалося розмістити electives для групи 10-A (викладач T_ELECT)"
+  ],
+  "warnings": [],
+  "statistics": {
+    "lessons_per_group": {
+      "10-A": 60
+    },
+    "lessons_per_teacher": {
+      "T_UKR1": 8,
+      "T_UKR2": 3,
+      "T_WORLD_LIT": 2,
+      "T_ENG": 6,
+      "T_MATH": 10,
+      "T_HIST_UA": 3,
+      "T_WORLD_HIST": 2,
+      "T_LAW": 1,
+      "T_CIVIC": 2,
+      "T_GEO": 3,
+      "T_BIO": 4,
+      "T_PHYS": 4,
+      "T_CHEM": 4,
+      "T_IT": 2,
+      "T_TECH": 2,
+      "T_ART": 2,
+      "T_PE": 2
+    },
+    "classroom_usage": {
+      "101": 44,
+      "BioLab": 4,
+      "PhysLab": 4,
+      "ChemLab": 4,
+      "CompLab": 2,
+      "Gym": 2
+    },
+    "subject_distribution": {
+      "ukr_lang": {
+        "day0": 1,
+        "day1": 1,
+        "day2": 1,
+        "day3": 1,
+        "day4": 1,
+        "day5": 1,
+        "day6": 1,
+        "day7": 1
+      },
+      "ukr_lit": {
+        "day8": 2,
+        "day9": 1
+      },
+      "world_lit": {
+        "day0": 2
+      },
+      "eng_lang": {
+        "day1": 2,
+        "day2": 2,
+        "day3": 2
+      },
+      "math": {
+        "day4": 2,
+        "day5": 2,
+        "day6": 2,
+        "day7": 2,
+        "day9": 2
+      },
+      "history_ua": {
+        "day8": 2,
+        "day0": 1
+      },
+      "world_history": {
+        "day1": 2
+      },
+      "law_basics": {
+        "day2": 1
+      },
+      "civic": {
+        "day3": 2
+      },
+      "geography": {
+        "day4": 2,
+        "day5": 1
+      },
+      "biology": {
+        "day6": 2,
+        "day7": 2
+      },
+      "physics": {
+        "day9": 2,
+        "day0": 1,
+        "day2": 1
+      },
+      "chemistry": {
+        "day5": 2,
+        "day8": 2
+      },
+      "informatics": {
+        "day0": 1,
+        "day1": 1
+      },
+      "technology": {
+        "day2": 1,
+        "day3": 1
+      },
+      "art": {
+        "day4": 1,
+        "day6": 1
+      },
+      "pe": {
+        "day7": 1,
+        "day9": 1
+      }
+    }
+  }
+}

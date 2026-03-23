@@ -1,0 +1,151 @@
+{
+  "groups": [{ "id": "10-A", "students_count": 30 }],
+  "subjects": [
+    { "id": "ukr_lang", "name": "Українська мова", "difficulty": 3 },
+    { "id": "ukr_lit", "name": "Українська література", "difficulty": 2 },
+    { "id": "world_lit", "name": "Зарубіжна література", "difficulty": 2 },
+    { "id": "eng_lang", "name": "Англійська мова", "difficulty": 3 },
+    { "id": "math", "name": "Математика", "difficulty": 4 },
+    { "id": "history_ua", "name": "Історія України", "difficulty": 2 },
+    { "id": "world_history", "name": "Всесвітня історія", "difficulty": 2 },
+    { "id": "law_basics", "name": "Основи правознавства", "difficulty": 1 },
+    { "id": "civic", "name": "Громадянська освіта", "difficulty": 1 },
+    { "id": "geography", "name": "Географія", "difficulty": 2 },
+    {
+      "id": "biology",
+      "name": "Біологія",
+      "requires_specialized": true,
+      "classroom_type": "biology_lab",
+      "difficulty": 2
+    },
+    {
+      "id": "physics",
+      "name": "Фізика",
+      "requires_specialized": true,
+      "classroom_type": "physics_lab",
+      "difficulty": 3
+    },
+    {
+      "id": "chemistry",
+      "name": "Хімія",
+      "requires_specialized": true,
+      "classroom_type": "chemistry_lab",
+      "difficulty": 3
+    },
+    {
+      "id": "informatics",
+      "name": "Інформатика",
+      "requires_specialized": true,
+      "classroom_type": "computer_lab",
+      "difficulty": 2
+    },
+    { "id": "technology", "name": "Технології", "difficulty": 1 },
+    { "id": "art", "name": "Мистецтво", "difficulty": 1 },
+    {
+      "id": "pe",
+      "name": "Фізична культура",
+      "requires_specialized": true,
+      "classroom_type": "gym",
+      "difficulty": 1
+    },
+    { "id": "electives", "name": "Факультативи", "difficulty": 1 }
+  ],
+  "teachers": [
+    { "id": "T_UKR1", "name": "Коваленко Л.В.", "subjects": ["ukr_lang"] },
+    { "id": "T_UKR2", "name": "Гриценко Н.В.", "subjects": ["ukr_lit"] },
+    { "id": "T_WORLD_LIT", "name": "Мельник О.О.", "subjects": ["world_lit"] },
+    { "id": "T_ENG", "name": "Сміт А.А.", "subjects": ["eng_lang"] },
+    { "id": "T_MATH", "name": "Данилюк І.П.", "subjects": ["math"] },
+    { "id": "T_HIST_UA", "name": "Савченко Ю.Р.", "subjects": ["history_ua"] },
+    {
+      "id": "T_WORLD_HIST",
+      "name": "Бондар В.М.",
+      "subjects": ["world_history"]
+    },
+    { "id": "T_LAW", "name": "Романюк А.С.", "subjects": ["law_basics"] },
+    { "id": "T_CIVIC", "name": "Литвин Т.М.", "subjects": ["civic"] },
+    { "id": "T_GEO", "name": "Миронова К.І.", "subjects": ["geography"] },
+    { "id": "T_BIO", "name": "Іванова Н.Д.", "subjects": ["biology"] },
+    { "id": "T_PHYS", "name": "Пархоменко С.В.", "subjects": ["physics"] },
+    { "id": "T_CHEM", "name": "Горбань О.Г.", "subjects": ["chemistry"] },
+    { "id": "T_IT", "name": "Жук П.Д.", "subjects": ["informatics"] },
+    { "id": "T_TECH", "name": "Ткаченко М.М.", "subjects": ["technology"] },
+    { "id": "T_ART", "name": "Федоренко О.С.", "subjects": ["art"] },
+    { "id": "T_PE", "name": "Кравець В.В.", "subjects": ["pe"] },
+    { "id": "T_ELECT", "name": "Гуменюк І.О.", "subjects": ["electives"] }
+  ],
+  "classrooms": [
+    { "id": "101", "capacity": 32, "type": "general" },
+    { "id": "102", "capacity": 32, "type": "general" },
+    { "id": "103", "capacity": 28, "type": "general" },
+    { "id": "BioLab", "capacity": 24, "type": "biology_lab" },
+    { "id": "PhysLab", "capacity": 20, "type": "physics_lab" },
+    { "id": "ChemLab", "capacity": 20, "type": "chemistry_lab" },
+    { "id": "CompLab", "capacity": 26, "type": "computer_lab" },
+    { "id": "Gym", "capacity": 40, "type": "gym" }
+  ],
+  "lessons_pool": [
+    { "subject": "ukr_lang", "teacher": "T_UKR1", "group": "10-A", "count": 8 },
+    { "subject": "ukr_lit", "teacher": "T_UKR2", "group": "10-A", "count": 3 },
+    {
+      "subject": "world_lit",
+      "teacher": "T_WORLD_LIT",
+      "group": "10-A",
+      "count": 2
+    },
+    { "subject": "eng_lang", "teacher": "T_ENG", "group": "10-A", "count": 6 },
+    { "subject": "math", "teacher": "T_MATH", "group": "10-A", "count": 10 },
+    {
+      "subject": "history_ua",
+      "teacher": "T_HIST_UA",
+      "group": "10-A",
+      "count": 3
+    },
+    {
+      "subject": "world_history",
+      "teacher": "T_WORLD_HIST",
+      "group": "10-A",
+      "count": 2
+    },
+    {
+      "subject": "law_basics",
+      "teacher": "T_LAW",
+      "group": "10-A",
+      "count": 1
+    },
+    { "subject": "civic", "teacher": "T_CIVIC", "group": "10-A", "count": 2 },
+    { "subject": "geography", "teacher": "T_GEO", "group": "10-A", "count": 3 },
+    { "subject": "biology", "teacher": "T_BIO", "group": "10-A", "count": 4 },
+    { "subject": "physics", "teacher": "T_PHYS", "group": "10-A", "count": 4 },
+    {
+      "subject": "chemistry",
+      "teacher": "T_CHEM",
+      "group": "10-A",
+      "count": 4
+    },
+    {
+      "subject": "informatics",
+      "teacher": "T_IT",
+      "group": "10-A",
+      "count": 2
+    },
+    {
+      "subject": "technology",
+      "teacher": "T_TECH",
+      "group": "10-A",
+      "count": 2
+    },
+    { "subject": "art", "teacher": "T_ART", "group": "10-A", "count": 2 },
+    { "subject": "pe", "teacher": "T_PE", "group": "10-A", "count": 6 },
+    {
+      "subject": "electives",
+      "teacher": "T_ELECT",
+      "group": "10-A",
+      "count": 2
+    }
+  ],
+  "constraints": {
+    "max_daily_lessons": 7,
+    "prefer_morning": ["math", "ukr_lang"]
+  }
+}
