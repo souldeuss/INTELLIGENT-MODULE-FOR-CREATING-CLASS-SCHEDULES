@@ -1,2 +1,2 @@
 # Ignore frontend build and dependencies
-frontend/
+frontend/node_modules/
