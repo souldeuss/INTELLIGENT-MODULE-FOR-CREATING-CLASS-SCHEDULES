@@ -226,6 +226,7 @@ class ScheduleGenerationRequest(BaseModel):
     iterations: int = Field(default=1000, ge=100, le=10000)
     use_existing: bool = Field(default=False)
     preserve_locked: bool = Field(default=True)
+    model_version: Optional[str] = Field(default=None, description="Назва файлу моделі, наприклад actor_critic_20260327_120000.pt")
 
 
 class ScheduleGenerationStatus(BaseModel):

@@ -140,7 +140,7 @@ def generate_schedule(
     # Запустити генерацію у окремому потоці
     thread = threading.Thread(
         target=_run_generation,
-        args=(generation.id, request.iterations, request.preserve_locked, request.use_existing),
+        args=(generation.id, request.iterations, request.preserve_locked, request.use_existing, request.model_version),
         daemon=True
     )
     thread.start()
@@ -150,7 +150,13 @@ def generate_schedule(
     return generation
 
 
-def _run_generation(generation_id: int, iterations: int, preserve_locked: bool, use_existing: bool):
+def _run_generation(
+    generation_id: int,
+    iterations: int,
+    preserve_locked: bool,
+    use_existing: bool,
+    model_version: str = None,
+):
     """Фонова задача генерації (виконується в окремому потоці)."""
     import time
     from ..core.database_session import SessionLocal
@@ -248,7 +254,15 @@ def _run_generation(generation_id: int, iterations: int, preserve_locked: bool, 
 
         # Навчання моделі
         logger.info(f"🎓 Початок тренування на {iterations} ітераціях...")
-        trainer = PPOTrainer(env, state_dim, action_dim, device="cpu", progress_callback=update_progress, stop_callback=check_stop)
+        trainer = PPOTrainer(
+            env,
+            state_dim,
+            action_dim,
+            device="cpu",
+            progress_callback=update_progress,
+            stop_callback=check_stop,
+            model_version=model_version,
+        )
         episode_rewards, stats = trainer.train(num_iterations=iterations)
         
         # Перевірка чи було зупинено
@@ -301,7 +315,7 @@ def _run_generation(generation_id: int, iterations: int, preserve_locked: bool, 
 
         # Оновлення статусу генерації
         generation.status = "completed"
-        generation.final_score = stats.get("best_reward", 0)
+        generation.final_score = stats.get("best_model_score", stats.get("best_reward", 0))
         
         # V2 версія має інші ключі в stats
         if "hard_violations" in stats:
@@ -545,11 +559,21 @@ def get_training_metrics(db: Session = Depends(get_db)):
     """Отримати метрики навчання нейромережі."""
     import json
     from pathlib import Path
-    
-    metrics_path = Path(__file__).parent.parent.parent / "saved_models" / "training_metrics.json"
-    
-    if not metrics_path.exists():
-        raise HTTPException(status_code=404, detail="Training metrics not found. Train the model first.")
+
+    candidate_paths = [
+        Path("./saved_models/training_metrics.json"),
+        Path("./backend/saved_models/training_metrics.json"),
+        Path(__file__).parent.parent.parent / "saved_models" / "training_metrics.json",
+    ]
+
+    metrics_path = next((p for p in candidate_paths if p.exists()), None)
+
+    if metrics_path is None:
+        checked = ", ".join(str(p) for p in candidate_paths)
+        raise HTTPException(
+            status_code=404,
+            detail=f"Training metrics not found. Checked: {checked}",
+        )
     
     try:
         with open(metrics_path, 'r', encoding='utf-8') as f:

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Box,
   Paper,
@@ -76,6 +76,8 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
   compact = false,
 }) => {
   const navigate = useNavigate();
+  const pollIntervalRef = useRef<number | null>(null);
+  const ACTIVE_GENERATION_STORAGE_KEY = "aiControlActiveGenerationId";
 
   // Generation state
   const [isGenerating, setIsGenerating] = useState(false);
@@ -112,6 +114,129 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
   const [estimatedTime, setEstimatedTime] = useState<string>("");
   const [clearingSchedule, setClearingSchedule] = useState(false);
 
+  const stopPolling = useCallback(() => {
+    if (pollIntervalRef.current !== null) {
+      window.clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+    }
+  }, []);
+
+  const persistGenerationId = useCallback(
+    (id: number) => {
+      localStorage.setItem(ACTIVE_GENERATION_STORAGE_KEY, String(id));
+    },
+    [ACTIVE_GENERATION_STORAGE_KEY]
+  );
+
+  const clearPersistedGenerationId = useCallback(() => {
+    localStorage.removeItem(ACTIVE_GENERATION_STORAGE_KEY);
+  }, [ACTIVE_GENERATION_STORAGE_KEY]);
+
+  const applyTerminalStatus = useCallback(
+    (nextStatus: "completed" | "failed" | "stopped") => {
+      setStatus(nextStatus);
+      setIsGenerating(false);
+      setGenerationId(null);
+      stopPolling();
+      clearPersistedGenerationId();
+
+      if (nextStatus === "completed") {
+        onGenerationComplete?.();
+      }
+    },
+    [clearPersistedGenerationId, onGenerationComplete, stopPolling]
+  );
+
+  const syncGenerationStatus = useCallback(
+    async (id: number) => {
+      try {
+        const response = await getGenerationStatus(id);
+        const data = response.data;
+
+        const totalIterations =
+          typeof data.iterations === "number" && data.iterations > 0
+            ? data.iterations
+            : iterations;
+        const currentIter =
+          typeof data.current_iteration === "number" ? data.current_iteration : 0;
+
+        setGenerationId(id);
+        setCurrentIteration(currentIter);
+        setProgress(
+          totalIterations > 0 ? (currentIter / totalIterations) * 100 : 0
+        );
+
+        if (Array.isArray(data.reward_history)) {
+          setMetrics(
+            data.reward_history.map((r: number, i: number) => ({
+              iteration: i + 1,
+              reward: r,
+              hardViolations:
+                typeof data.hard_violations === "number" ? data.hard_violations : 0,
+              softViolations:
+                typeof data.soft_violations === "number" ? data.soft_violations : 0,
+            }))
+          );
+        }
+
+        if (typeof data.best_reward === "number") {
+          setBestReward(data.best_reward);
+        }
+
+        if (data.status === "completed") {
+          applyTerminalStatus("completed");
+          return "completed" as const;
+        }
+        if (data.status === "failed") {
+          applyTerminalStatus("failed");
+          return "failed" as const;
+        }
+        if (data.status === "stopped") {
+          applyTerminalStatus("stopped");
+          return "stopped" as const;
+        }
+
+        setStatus("running");
+        setIsGenerating(true);
+        persistGenerationId(id);
+        return "running" as const;
+      } catch (error: any) {
+        if (error?.response?.status === 404) {
+          clearPersistedGenerationId();
+          setGenerationId(null);
+          setIsGenerating(false);
+          setStatus("idle");
+          stopPolling();
+          return "missing" as const;
+        }
+
+        console.error("Status sync failed:", error);
+        applyTerminalStatus("failed");
+        return "failed" as const;
+      }
+    },
+    [
+      applyTerminalStatus,
+      clearPersistedGenerationId,
+      iterations,
+      persistGenerationId,
+      stopPolling,
+    ]
+  );
+
+  const startPolling = useCallback(
+    (id: number) => {
+      stopPolling();
+
+      pollIntervalRef.current = window.setInterval(() => {
+        void syncGenerationStatus(id);
+      }, 1000);
+
+      void syncGenerationStatus(id);
+    },
+    [stopPolling, syncGenerationStatus]
+  );
+
   // Clear current schedule
   const handleClearSchedule = async () => {
     if (
@@ -125,6 +250,9 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
         setStatus("idle");
         setProgress(0);
         setCurrentIteration(0);
+        setGenerationId(null);
+        stopPolling();
+        clearPersistedGenerationId();
         setMetrics([]);
         setBestReward(null);
         onGenerationComplete?.();
@@ -136,59 +264,19 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
     }
   };
 
-  // Poll generation status
-  const pollStatus = useCallback(
-    async (id: number) => {
-      const interval = setInterval(async () => {
-        try {
-          const response = await getGenerationStatus(id);
-          const data = response.data;
-
-          setCurrentIteration(data.current_iteration || 0);
-          setProgress((data.current_iteration / data.iterations) * 100);
-
-          // Update metrics
-          if (data.reward_history) {
-            setMetrics(
-              data.reward_history.map((r: number, i: number) => ({
-                iteration: i + 1,
-                reward: r,
-                hardViolations: data.hard_violations || 0,
-                softViolations: data.soft_violations || 0,
-              }))
-            );
-          }
-
-          if (data.best_reward !== undefined) {
-            setBestReward(data.best_reward);
-          }
-
-          if (data.status === "completed") {
-            setStatus("completed");
-            setIsGenerating(false);
-            clearInterval(interval);
-            onGenerationComplete?.();
-          } else if (data.status === "failed") {
-            setStatus("failed");
-            setIsGenerating(false);
-            clearInterval(interval);
-          } else if (data.status === "stopped") {
-            setStatus("stopped");
-            setIsGenerating(false);
-            clearInterval(interval);
-          }
-        } catch (error) {
-          console.error("Status poll failed:", error);
-        }
-      }, 1000);
-
-      return () => clearInterval(interval);
-    },
-    [onGenerationComplete]
-  );
-
   // Start generation
   const handleStart = async () => {
+    const persistedIdRaw = localStorage.getItem(ACTIVE_GENERATION_STORAGE_KEY);
+    const persistedId = persistedIdRaw ? Number(persistedIdRaw) : null;
+
+    if (persistedId && Number.isFinite(persistedId) && persistedId > 0) {
+      const existingStatus = await syncGenerationStatus(persistedId);
+      if (existingStatus === "running") {
+        startPolling(persistedId);
+        return;
+      }
+    }
+
     setIsGenerating(true);
     setStatus("running");
     setProgress(0);
@@ -209,16 +297,17 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
       };
 
       const response = await generateSchedule(params);
-      setGenerationId(response.data.id);
-      pollStatus(response.data.id);
+      const startedId = response.data.id;
+      setGenerationId(startedId);
+      persistGenerationId(startedId);
+      startPolling(startedId);
 
       // Estimate time
       const estimatedSeconds = iterations * 0.3; // ~0.3s per iteration
       setEstimatedTime(formatTime(estimatedSeconds));
     } catch (error) {
       console.error("Generation failed:", error);
-      setStatus("failed");
-      setIsGenerating(false);
+      applyTerminalStatus("failed");
     }
   };
 
@@ -227,13 +316,28 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
     if (generationId) {
       try {
         await stopGeneration(generationId);
-        setStatus("stopped");
-        setIsGenerating(false);
+        applyTerminalStatus("stopped");
       } catch (error) {
         console.error("Stop failed:", error);
       }
     }
   };
+
+  useEffect(() => {
+    const persistedIdRaw = localStorage.getItem(ACTIVE_GENERATION_STORAGE_KEY);
+    const persistedId = persistedIdRaw ? Number(persistedIdRaw) : null;
+
+    if (persistedId && Number.isFinite(persistedId) && persistedId > 0) {
+      setGenerationId(persistedId);
+      setStatus("running");
+      setIsGenerating(true);
+      startPolling(persistedId);
+    }
+
+    return () => {
+      stopPolling();
+    };
+  }, [ACTIVE_GENERATION_STORAGE_KEY, startPolling, stopPolling]);
 
   const formatTime = (seconds: number): string => {
     if (seconds < 60) return `~${Math.round(seconds)}с`;

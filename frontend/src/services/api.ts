@@ -219,6 +219,143 @@ export const statsService = {
   getDistributionStats: () => api.get("/stats/distribution"),
 };
 
+// ==================== TRAINING DASHBOARD ====================
+export interface TrainingStatusResponse {
+  active: boolean;
+  session_id?: string;
+  status?: string;
+  timing?: {
+    elapsed_seconds: number;
+    elapsed_hms: string;
+    estimated_remaining_seconds: number | null;
+    estimated_remaining_hms: string | null;
+    avg_time_per_iteration: number | null;
+  };
+  progress?: {
+    current_iteration: number;
+    total_iterations: number;
+    percentage: number;
+  };
+  hyperparameters?: {
+    learning_rate?: number;
+    gamma?: number;
+    epsilon?: number;
+    batch_size?: number;
+    gae_lambda?: number;
+    entropy_coef?: number;
+    value_coef?: number;
+    lr_scheduler?: string;
+  };
+  session_summary?: {
+    dataset_version: string;
+    dataset_manifest: string | null;
+    model_version: string;
+    epochs_completed: number;
+    epochs_total: number;
+    runtime_hms: string;
+    best_checkpoint: {
+      checkpoint_id: string;
+      iteration: number;
+      best_reward: number;
+      created_at: string;
+    } | null;
+  };
+  metrics?: {
+    current_reward: number;
+    best_reward: number;
+    hard_violations: number;
+    soft_violations: number;
+    successful_generations: number;
+    success_rate: number;
+    completion_rate: number;
+    policy_loss: number;
+    value_loss: number;
+    total_loss: number;
+    learning_rate: number;
+  } | null;
+}
+
+export interface TrainingHistoryResponse {
+  iteration: number[];
+  policy_loss?: Array<number | null>;
+  value_loss?: Array<number | null>;
+  total_loss?: Array<number | null>;
+  episode_reward?: Array<number | null>;
+  average_reward?: Array<number | null>;
+  learning_rate?: Array<number | null>;
+  hard_violations?: Array<number | null>;
+  soft_violations?: Array<number | null>;
+  success_count?: Array<number | null>;
+  success_rate?: Array<number | null>;
+  completion_rate?: Array<number | null>;
+}
+
+export interface BestSchedulePreviewResponse {
+  available: boolean;
+  message?: string;
+  source_file?: string;
+  updated_at?: string;
+  meta?: {
+    generation_id?: number;
+    best_reward?: number;
+    hard_violations?: number;
+    soft_violations?: number;
+    classes_count?: number;
+  };
+  heatmap: Array<{
+    day: number;
+    day_label: string;
+    period: number;
+    count: number;
+  }>;
+  table: Array<{
+    course: string;
+    teacher: string;
+    group: string;
+    room: string;
+    day: number;
+    day_label: string;
+    period: number;
+    start_time: string | null;
+    end_time: string | null;
+  }>;
+}
+
+export const trainingService = {
+  startDataset100Preset: (payload?: {
+    iterations?: number;
+    seed?: number;
+    train_ratio?: number;
+    dataset_name?: string;
+    device?: string;
+    promote?: boolean;
+    regenerate_dataset?: boolean;
+  }) => api.post("/training/presets/dataset-100/start", payload || {}),
+
+  getDataset100PresetJobs: () => api.get("/training/presets/dataset-100/jobs"),
+
+  getDataset100PresetStatus: (jobId: string) =>
+    api.get(`/training/presets/dataset-100/status/${jobId}`),
+
+  getStatus: () => api.get<TrainingStatusResponse>("/training/status"),
+
+  getHistory: (lastN: number = 200) =>
+    api.get<TrainingHistoryResponse>("/training/metrics/history", {
+      params: {
+        metrics:
+          "policy_loss,value_loss,total_loss,episode_reward,average_reward,learning_rate,hard_violations,soft_violations,success_count,success_rate,completion_rate",
+        last_n: lastN,
+      },
+    }),
+
+  getBestSchedulePreview: (maxRows: number = 20) =>
+    api.get<BestSchedulePreviewResponse>("/training/best-schedule-preview", {
+      params: { max_rows: maxRows },
+    }),
+
+  getLegacyMetricsSnapshot: () => api.get("/schedule/training-metrics"),
+};
+
 // ==================== SCHEDULES LIST ====================
 export const getSchedules = () => api.get("/schedule/files");
 

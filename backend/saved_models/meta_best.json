@@ -1,0 +1,18 @@
+{
+  "saved_at": "2026-03-27T22:17:03.656494",
+  "model_file": "actor_critic_best.pt",
+  "state_dim": 1583,
+  "action_dim": 4096,
+  "selection_strategy": "combined_score",
+  "score_weights": {
+    "reward_weight": 1.0,
+    "completion_weight": 100.0,
+    "hard_violation_penalty": 25.0,
+    "soft_violation_penalty": 5.0
+  },
+  "best_reward": 228.3599395751953,
+  "best_completion": 1.0,
+  "best_model_score": 328.3599395751953,
+  "hard_violations": 0,
+  "soft_violations": 0
+}

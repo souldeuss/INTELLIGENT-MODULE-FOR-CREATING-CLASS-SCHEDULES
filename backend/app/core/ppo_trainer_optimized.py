@@ -25,6 +25,7 @@ import time
 
 from .actor_critic import ActorCritic
 from .environment_optimized import OptimizedTimetablingEnvironment, VectorizedEnvWrapper
+from .model_registry import get_active_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,8 @@ class OptimizedPPOTrainer:
         progress_callback: Optional[Callable] = None,
         stop_callback: Optional[Callable] = None,  # Callback для перевірки зупинки
         use_mixed_precision: bool = True,  # FP16 для GPU
+        model_version: Optional[str] = None,
+        score_weights: Optional[dict] = None,
     ):
         # Auto-detect device
         if device == "auto":
@@ -83,6 +86,8 @@ class OptimizedPPOTrainer:
         self.epochs = epochs
         self.progress_callback = progress_callback
         self.stop_callback = stop_callback
+        self.model_version = model_version
+        self.score_weights = score_weights or {}
         
         # Mixed precision (для GPU)
         self.use_mixed_precision = use_mixed_precision and self.device.type == "cuda"
@@ -122,10 +127,23 @@ class OptimizedPPOTrainer:
 
     def _try_load_pretrained(self) -> bool:
         """Завантажити попередньо навчену модель з перевіркою сумісності."""
-        model_path = self.model_dir / "actor_critic_best.pt"
-        meta_path = self.model_dir / "meta_best.json"
-        
-        if model_path.exists():
+        candidates = []
+        if self.model_version:
+            model_name = self.model_version if self.model_version.endswith(".pt") else f"{self.model_version}.pt"
+            candidates.append(self.model_dir / model_name)
+        else:
+            active_name = get_active_model_name(self.model_dir)
+            candidates.append(self.model_dir / active_name)
+            fallback = self.model_dir / "actor_critic_best.pt"
+            if fallback not in candidates:
+                candidates.append(fallback)
+
+        for model_path in candidates:
+            if not model_path.exists():
+                continue
+
+            meta_suffix = model_path.stem.replace("actor_critic_", "")
+            meta_path = self.model_dir / f"meta_{meta_suffix}.json"
             try:
                 # Перевірити сумісність розмірів
                 if meta_path.exists():

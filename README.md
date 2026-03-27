@@ -53,6 +53,30 @@ python src/main.py --config data/config.sample.json --input data/input.sample.js
 pytest
 ```
 
+## DRL Lifecycle (Train -> Evaluate -> Promote)
+
+Для протоколу навчання з hold-out оцінкою використовуйте manifest-файл.
+
+1. Відредагуйте [data/dataset_manifest.sample.json](data/dataset_manifest.sample.json):
+  - `train` / `test` списки кейсів
+  - `seed` для відтворюваності
+  - `promotion_policy` для порогів активації моделі
+  - за потреби вкажіть `sha256` для перевірки цілісності датасетів
+
+2. Запустіть train+eval пайплайн:
+
+```powershell
+python backend/train_eval_pipeline.py --manifest data/dataset_manifest.sample.json --iterations 300 --device cpu
+```
+
+3. Автоматичний promote (лише якщо пройдено policy-gating):
+
+```powershell
+python backend/train_eval_pipeline.py --manifest data/dataset_manifest.sample.json --iterations 300 --device cpu --promote
+```
+
+Після запуску формується звіт `evaluation_report_*.json` з метаданими manifest, dataset-hash, score-margin та перевіркою всіх критеріїв `promotion_policy`.
+
 ## Розширення
 
 - Додайте новий режим, успадкувавши `ScheduleMode`

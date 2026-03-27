@@ -4,6 +4,17 @@
 
 Додано повну систему моніторингу та візуалізації процесу навчання DRL-моделі для генерації розкладів. Тепер можна в реальному часі переглядати ефективність навчання нейромережі через зручний веб-інтерфейс.
 
+## Оновлення протоколу train/eval/promote
+
+Додатково до графіків, пайплайн `backend/train_eval_pipeline.py` формує `evaluation_report_*.json` з:
+
+- `manifest_version`, `dataset_policy`, `seed`
+- hash датасетів (`sha256`) для train/test наборів
+- score margin моделі проти baseline
+- перевіркою критеріїв `promotion_policy` (completion/hard/soft/margin)
+
+Це дає відтворюваність та контроль якості перед активацією моделі (`--promote`).
+
 ## Основні компоненти
 
 ### 1. Backend API Endpoint

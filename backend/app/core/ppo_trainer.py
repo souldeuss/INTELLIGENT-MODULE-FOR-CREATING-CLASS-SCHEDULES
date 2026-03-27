@@ -12,6 +12,7 @@ import logging
 
 from .actor_critic import ActorCritic
 from .environment import TimetablingEnvironment
+from .model_registry import get_active_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,8 @@ class PPOTrainer:
         device: str = "cpu",
         progress_callback=None,  # Callback для оновлення прогресу
         stop_callback=None,  # Callback для перевірки зупинки
+        model_version: Optional[str] = None,
+        score_weights: Optional[dict] = None,
     ):
         self.env = env
         self.device = torch.device(device)
@@ -43,6 +46,8 @@ class PPOTrainer:
         self.epochs = epochs
         self.progress_callback = progress_callback
         self.stop_callback = stop_callback
+        self.model_version = model_version
+        self.score_weights = score_weights or {}
         
         # Директорія для збереження моделей
         self.model_dir = Path("./backend/saved_models")
@@ -53,8 +58,21 @@ class PPOTrainer:
     
     def _try_load_pretrained(self) -> bool:
         """Спробувати завантажити збережену модель."""
-        model_path = self.model_dir / "actor_critic_best.pt"
-        if model_path.exists():
+        candidates = []
+        if self.model_version:
+            model_name = self.model_version if self.model_version.endswith(".pt") else f"{self.model_version}.pt"
+            candidates.append(self.model_dir / model_name)
+        else:
+            active_name = get_active_model_name(self.model_dir)
+            candidates.append(self.model_dir / active_name)
+            fallback = self.model_dir / "actor_critic_best.pt"
+            if fallback not in candidates:
+                candidates.append(fallback)
+
+        for model_path in candidates:
+            if not model_path.exists():
+                continue
+
             try:
                 state_dict = torch.load(str(model_path), map_location=self.device)
                 self.model.load_state_dict(state_dict)
@@ -69,6 +87,7 @@ class PPOTrainer:
                 return True
             except Exception as e:
                 logger.warning(f"⚠️ Не вдалося завантажити модель: {e}")
+
         return False
     
     def save_model(self, suffix: str = "best") -> Path:

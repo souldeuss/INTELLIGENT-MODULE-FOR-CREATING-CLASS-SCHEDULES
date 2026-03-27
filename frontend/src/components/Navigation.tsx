@@ -39,9 +39,9 @@ const menuSections = [
         badge: null,
       },
       {
-        text: "AI Генератор",
+        text: "Індивідуальна генерація",
         icon: <PsychologyIcon />,
-        path: "/ai-generator",
+        path: "/individual-generation",
         badge: "NEW",
       },
       {
@@ -78,6 +78,17 @@ const menuSections = [
     ],
   },
   {
+    title: "Сценарії",
+    items: [
+      {
+        text: "Навчання моделі",
+        icon: <TimelineIcon />,
+        path: "/training-metrics",
+        badge: "LIVE",
+      },
+    ],
+  },
+  {
     title: "Аналітика",
     items: [
       {
@@ -90,12 +101,6 @@ const menuSections = [
         text: "Статистика",
         icon: <BarChartIcon />,
         path: "/analytics",
-        badge: null,
-      },
-      {
-        text: "Метрики навчання",
-        icon: <TimelineIcon />,
-        path: "/training-metrics",
         badge: null,
       },
     ],

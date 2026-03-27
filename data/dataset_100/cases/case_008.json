@@ -1,0 +1,490 @@
+{
+  "groups": [
+    {
+      "id": "Y3-G01-C008",
+      "students_count": 20,
+      "year": 3
+    },
+    {
+      "id": "Y3-G02-C008",
+      "students_count": 20,
+      "year": 3
+    },
+    {
+      "id": "Y3-G03-C008",
+      "students_count": 25,
+      "year": 3
+    },
+    {
+      "id": "Y3-G04-C008",
+      "students_count": 16,
+      "year": 3
+    },
+    {
+      "id": "Y3-G05-C008",
+      "students_count": 17,
+      "year": 3
+    }
+  ],
+  "subjects": [
+    {
+      "name": "PhysicalEducation_008_01",
+      "difficulty": 1,
+      "requires_specialized": true,
+      "classroom_type": "gym",
+      "id": "SUBJ_008_01"
+    },
+    {
+      "name": "Literature_008_02",
+      "difficulty": 2,
+      "requires_specialized": false,
+      "classroom_type": "general",
+      "id": "SUBJ_008_02"
+    },
+    {
+      "name": "Biology_008_03",
+      "difficulty": 3,
+      "requires_specialized": true,
+      "classroom_type": "biology_lab",
+      "id": "SUBJ_008_03"
+    },
+    {
+      "name": "History_008_04",
+      "difficulty": 2,
+      "requires_specialized": false,
+      "classroom_type": "general",
+      "id": "SUBJ_008_04"
+    },
+    {
+      "name": "Mathematics_008_05",
+      "difficulty": 3,
+      "requires_specialized": false,
+      "classroom_type": "general",
+      "id": "SUBJ_008_05"
+    },
+    {
+      "name": "Economics_008_06",
+      "difficulty": 3,
+      "requires_specialized": false,
+      "classroom_type": "general",
+      "id": "SUBJ_008_06"
+    },
+    {
+      "name": "Geography_008_07",
+      "difficulty": 2,
+      "requires_specialized": false,
+      "classroom_type": "general",
+      "id": "SUBJ_008_07"
+    },
+    {
+      "name": "English_008_08",
+      "difficulty": 2,
+      "requires_specialized": false,
+      "classroom_type": "general",
+      "id": "SUBJ_008_08"
+    },
+    {
+      "name": "Art_008_09",
+      "difficulty": 1,
+      "requires_specialized": false,
+      "classroom_type": "general",
+      "id": "SUBJ_008_09"
+    },
+    {
+      "name": "Chemistry_008_10",
+      "difficulty": 4,
+      "requires_specialized": true,
+      "classroom_type": "chemistry_lab",
+      "id": "SUBJ_008_10"
+    }
+  ],
+  "teachers": [
+    {
+      "id": "T008_01",
+      "name": "Teacher_008_01",
+      "subjects": [
+        "SUBJ_008_04",
+        "SUBJ_008_08",
+        "SUBJ_008_06",
+        "SUBJ_008_10"
+      ],
+      "max_hours_per_week": 22
+    },
+    {
+      "id": "T008_02",
+      "name": "Teacher_008_02",
+      "subjects": [
+        "SUBJ_008_06",
+        "SUBJ_008_10",
+        "SUBJ_008_02",
+        "SUBJ_008_01",
+        "SUBJ_008_09"
+      ],
+      "max_hours_per_week": 21
+    },
+    {
+      "id": "T008_03",
+      "name": "Teacher_008_03",
+      "subjects": [
+        "SUBJ_008_07",
+        "SUBJ_008_04",
+        "SUBJ_008_03",
+        "SUBJ_008_05"
+      ],
+      "max_hours_per_week": 20
+    },
+    {
+      "id": "T008_04",
+      "name": "Teacher_008_04",
+      "subjects": [
+        "SUBJ_008_01",
+        "SUBJ_008_05",
+        "SUBJ_008_04"
+      ],
+      "max_hours_per_week": 25
+    },
+    {
+      "id": "T008_05",
+      "name": "Teacher_008_05",
+      "subjects": [
+        "SUBJ_008_02",
+        "SUBJ_008_01",
+        "SUBJ_008_05",
+        "SUBJ_008_04"
+      ],
+      "max_hours_per_week": 25
+    },
+    {
+      "id": "T008_06",
+      "name": "Teacher_008_06",
+      "subjects": [
+        "SUBJ_008_04"
+      ],
+      "max_hours_per_week": 18
+    },
+    {
+      "id": "T008_07",
+      "name": "Teacher_008_07",
+      "subjects": [
+        "SUBJ_008_05"
+      ],
+      "max_hours_per_week": 25
+    },
+    {
+      "id": "T008_08",
+      "name": "Teacher_008_08",
+      "subjects": [
+        "SUBJ_008_07"
+      ],
+      "max_hours_per_week": 20
+    },
+    {
+      "id": "T008_09",
+      "name": "Teacher_008_09",
+      "subjects": [
+        "SUBJ_008_01",
+        "SUBJ_008_03",
+        "SUBJ_008_06"
+      ],
+      "max_hours_per_week": 22
+    },
+    {
+      "id": "T008_10",
+      "name": "Teacher_008_10",
+      "subjects": [
+        "SUBJ_008_01"
+      ],
+      "max_hours_per_week": 30
+    },
+    {
+      "id": "T008_11",
+      "name": "Teacher_008_11",
+      "subjects": [
+        "SUBJ_008_10"
+      ],
+      "max_hours_per_week": 26
+    },
+    {
+      "id": "T008_12",
+      "name": "Teacher_008_12",
+      "subjects": [
+        "SUBJ_008_02"
+      ],
+      "max_hours_per_week": 22
+    }
+  ],
+  "classrooms": [
+    {
+      "id": "R008_01",
+      "capacity": 24,
+      "type": "physics_lab"
+    },
+    {
+      "id": "R008_02",
+      "capacity": 22,
+      "type": "chemistry_lab"
+    },
+    {
+      "id": "R008_03",
+      "capacity": 19,
+      "type": "general"
+    },
+    {
+      "id": "R008_04",
+      "capacity": 20,
+      "type": "physics_lab"
+    },
+    {
+      "id": "R008_05",
+      "capacity": 21,
+      "type": "computer_lab"
+    },
+    {
+      "id": "R008_06",
+      "capacity": 31,
+      "type": "biology_lab"
+    },
+    {
+      "id": "R008_07",
+      "capacity": 23,
+      "type": "biology_lab"
+    },
+    {
+      "id": "R008_08",
+      "capacity": 18,
+      "type": "general"
+    },
+    {
+      "id": "R008_09",
+      "capacity": 28,
+      "type": "general"
+    }
+  ],
+  "lessons_pool": [
+    {
+      "subject": "SUBJ_008_07",
+      "teacher": "T008_03",
+      "group": "Y3-G01-C008",
+      "count": 4
+    },
+    {
+      "subject": "SUBJ_008_08",
+      "teacher": "T008_01",
+      "group": "Y3-G01-C008",
+      "count": 4
+    },
+    {
+      "subject": "SUBJ_008_03",
+      "teacher": "T008_09",
+      "group": "Y3-G01-C008",
+      "count": 2
+    },
+    {
+      "subject": "SUBJ_008_02",
+      "teacher": "T008_12",
+      "group": "Y3-G01-C008",
+      "count": 3
+    },
+    {
+      "subject": "SUBJ_008_10",
+      "teacher": "T008_02",
+      "group": "Y3-G01-C008",
+      "count": 2
+    },
+    {
+      "subject": "SUBJ_008_06",
+      "teacher": "T008_09",
+      "group": "Y3-G01-C008",
+      "count": 2
+    },
+    {
+      "subject": "SUBJ_008_04",
+      "teacher": "T008_06",
+      "group": "Y3-G02-C008",
+      "count": 2
+    },
+    {
+      "subject": "SUBJ_008_08",
+      "teacher": "T008_01",
+      "group": "Y3-G02-C008",
+      "count": 4
+    },
+    {
+      "subject": "SUBJ_008_06",
+      "teacher": "T008_02",
+      "group": "Y3-G02-C008",
+      "count": 3
+    },
+    {
+      "subject": "SUBJ_008_02",
+      "teacher": "T008_05",
+      "group": "Y3-G02-C008",
+      "count": 3
+    },
+    {
+      "subject": "SUBJ_008_10",
+      "teacher": "T008_01",
+      "group": "Y3-G02-C008",
+      "count": 1
+    },
+    {
+      "subject": "SUBJ_008_03",
+      "teacher": "T008_03",
+      "group": "Y3-G02-C008",
+      "count": 4
+    },
+    {
+      "subject": "SUBJ_008_01",
+      "teacher": "T008_10",
+      "group": "Y3-G02-C008",
+      "count": 3
+    },
+    {
+      "subject": "SUBJ_008_07",
+      "teacher": "T008_03",
+      "group": "Y3-G02-C008",
+      "count": 3
+    },
+    {
+      "subject": "SUBJ_008_09",
+      "teacher": "T008_02",
+      "group": "Y3-G03-C008",
+      "count": 4
+    },
+    {
+      "subject": "SUBJ_008_10",
+      "teacher": "T008_01",
+      "group": "Y3-G03-C008",
+      "count": 3
+    },
+    {
+      "subject": "SUBJ_008_07",
+      "teacher": "T008_08",
+      "group": "Y3-G03-C008",
+      "count": 2
+    },
+    {
+      "subject": "SUBJ_008_04",
+      "teacher": "T008_03",
+      "group": "Y3-G03-C008",
+      "count": 1
+    },
+    {
+      "subject": "SUBJ_008_08",
+      "teacher": "T008_01",
+      "group": "Y3-G03-C008",
+      "count": 4
+    },
+    {
+      "subject": "SUBJ_008_05",
+      "teacher": "T008_04",
+      "group": "Y3-G03-C008",
+      "count": 1
+    },
+    {
+      "subject": "SUBJ_008_01",
+      "teacher": "T008_04",
+      "group": "Y3-G03-C008",
+      "count": 1
+    },
+    {
+      "subject": "SUBJ_008_06",
+      "teacher": "T008_02",
+      "group": "Y3-G03-C008",
+      "count": 4
+    },
+    {
+      "subject": "SUBJ_008_09",
+      "teacher": "T008_02",
+      "group": "Y3-G04-C008",
+      "count": 3
+    },
+    {
+      "subject": "SUBJ_008_08",
+      "teacher": "T008_01",
+      "group": "Y3-G04-C008",
+      "count": 3
+    },
+    {
+      "subject": "SUBJ_008_05",
+      "teacher": "T008_04",
+      "group": "Y3-G04-C008",
+      "count": 1
+    },
+    {
+      "subject": "SUBJ_008_03",
+      "teacher": "T008_03",
+      "group": "Y3-G04-C008",
+      "count": 3
+    },
+    {
+      "subject": "SUBJ_008_10",
+      "teacher": "T008_01",
+      "group": "Y3-G04-C008",
+      "count": 1
+    },
+    {
+      "subject": "SUBJ_008_02",
+      "teacher": "T008_12",
+      "group": "Y3-G04-C008",
+      "count": 2
+    },
+    {
+      "subject": "SUBJ_008_07",
+      "teacher": "T008_08",
+      "group": "Y3-G04-C008",
+      "count": 4
+    },
+    {
+      "subject": "SUBJ_008_06",
+      "teacher": "T008_01",
+      "group": "Y3-G04-C008",
+      "count": 4
+    },
+    {
+      "subject": "SUBJ_008_10",
+      "teacher": "T008_11",
+      "group": "Y3-G05-C008",
+      "count": 3
+    },
+    {
+      "subject": "SUBJ_008_03",
+      "teacher": "T008_03",
+      "group": "Y3-G05-C008",
+      "count": 4
+    },
+    {
+      "subject": "SUBJ_008_05",
+      "teacher": "T008_04",
+      "group": "Y3-G05-C008",
+      "count": 2
+    },
+    {
+      "subject": "SUBJ_008_02",
+      "teacher": "T008_02",
+      "group": "Y3-G05-C008",
+      "count": 1
+    },
+    {
+      "subject": "SUBJ_008_06",
+      "teacher": "T008_01",
+      "group": "Y3-G05-C008",
+      "count": 1
+    },
+    {
+      "subject": "SUBJ_008_04",
+      "teacher": "T008_03",
+      "group": "Y3-G05-C008",
+      "count": 2
+    },
+    {
+      "subject": "SUBJ_008_07",
+      "teacher": "T008_03",
+      "group": "Y3-G05-C008",
+      "count": 3
+    }
+  ],
+  "constraints": {
+    "max_daily_lessons": 7
+  }
+}

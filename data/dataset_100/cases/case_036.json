@@ -1,0 +1,326 @@
+{
+  "groups": [
+    {
+      "id": "Y3-G01-C036",
+      "students_count": 26,
+      "year": 3
+    },
+    {
+      "id": "Y3-G02-C036",
+      "students_count": 24,
+      "year": 3
+    }
+  ],
+  "subjects": [
+    {
+      "name": "Chemistry_036_01",
+      "difficulty": 4,
+      "requires_specialized": true,
+      "classroom_type": "chemistry_lab",
+      "id": "SUBJ_036_01"
+    },
+    {
+      "name": "Mathematics_036_02",
+      "difficulty": 3,
+      "requires_specialized": false,
+      "classroom_type": "general",
+      "id": "SUBJ_036_02"
+    },
+    {
+      "name": "Biology_036_03",
+      "difficulty": 3,
+      "requires_specialized": true,
+      "classroom_type": "biology_lab",
+      "id": "SUBJ_036_03"
+    },
+    {
+      "name": "Art_036_04",
+      "difficulty": 1,
+      "requires_specialized": false,
+      "classroom_type": "general",
+      "id": "SUBJ_036_04"
+    },
+    {
+      "name": "Physics_036_05",
+      "difficulty": 4,
+      "requires_specialized": true,
+      "classroom_type": "physics_lab",
+      "id": "SUBJ_036_05"
+    },
+    {
+      "name": "Economics_036_06",
+      "difficulty": 3,
+      "requires_specialized": false,
+      "classroom_type": "general",
+      "id": "SUBJ_036_06"
+    },
+    {
+      "name": "Geography_036_07",
+      "difficulty": 2,
+      "requires_specialized": false,
+      "classroom_type": "general",
+      "id": "SUBJ_036_07"
+    },
+    {
+      "name": "English_036_08",
+      "difficulty": 2,
+      "requires_specialized": false,
+      "classroom_type": "general",
+      "id": "SUBJ_036_08"
+    },
+    {
+      "name": "Informatics_036_09",
+      "difficulty": 3,
+      "requires_specialized": true,
+      "classroom_type": "computer_lab",
+      "id": "SUBJ_036_09"
+    }
+  ],
+  "teachers": [
+    {
+      "id": "T036_01",
+      "name": "Teacher_036_01",
+      "subjects": [
+        "SUBJ_036_02",
+        "SUBJ_036_09",
+        "SUBJ_036_06",
+        "SUBJ_036_08"
+      ],
+      "max_hours_per_week": 23
+    },
+    {
+      "id": "T036_02",
+      "name": "Teacher_036_02",
+      "subjects": [
+        "SUBJ_036_01",
+        "SUBJ_036_07",
+        "SUBJ_036_08"
+      ],
+      "max_hours_per_week": 18
+    },
+    {
+      "id": "T036_03",
+      "name": "Teacher_036_03",
+      "subjects": [
+        "SUBJ_036_07",
+        "SUBJ_036_02",
+        "SUBJ_036_01"
+      ],
+      "max_hours_per_week": 24
+    },
+    {
+      "id": "T036_04",
+      "name": "Teacher_036_04",
+      "subjects": [
+        "SUBJ_036_01",
+        "SUBJ_036_07"
+      ],
+      "max_hours_per_week": 21
+    },
+    {
+      "id": "T036_05",
+      "name": "Teacher_036_05",
+      "subjects": [
+        "SUBJ_036_08",
+        "SUBJ_036_09",
+        "SUBJ_036_07",
+        "SUBJ_036_01"
+      ],
+      "max_hours_per_week": 28
+    },
+    {
+      "id": "T036_06",
+      "name": "Teacher_036_06",
+      "subjects": [
+        "SUBJ_036_04",
+        "SUBJ_036_06"
+      ],
+      "max_hours_per_week": 19
+    },
+    {
+      "id": "T036_07",
+      "name": "Teacher_036_07",
+      "subjects": [
+        "SUBJ_036_01",
+        "SUBJ_036_09",
+        "SUBJ_036_06"
+      ],
+      "max_hours_per_week": 21
+    },
+    {
+      "id": "T036_08",
+      "name": "Teacher_036_08",
+      "subjects": [
+        "SUBJ_036_06",
+        "SUBJ_036_09",
+        "SUBJ_036_07",
+        "SUBJ_036_08"
+      ],
+      "max_hours_per_week": 23
+    },
+    {
+      "id": "T036_09",
+      "name": "Teacher_036_09",
+      "subjects": [
+        "SUBJ_036_06",
+        "SUBJ_036_07"
+      ],
+      "max_hours_per_week": 23
+    },
+    {
+      "id": "T036_10",
+      "name": "Teacher_036_10",
+      "subjects": [
+        "SUBJ_036_05"
+      ],
+      "max_hours_per_week": 18
+    },
+    {
+      "id": "T036_11",
+      "name": "Teacher_036_11",
+      "subjects": [
+        "SUBJ_036_02",
+        "SUBJ_036_04",
+        "SUBJ_036_03",
+        "SUBJ_036_07"
+      ],
+      "max_hours_per_week": 20
+    },
+    {
+      "id": "T036_12",
+      "name": "Teacher_036_12",
+      "subjects": [
+        "SUBJ_036_07",
+        "SUBJ_036_09",
+        "SUBJ_036_06"
+      ],
+      "max_hours_per_week": 19
+    }
+  ],
+  "classrooms": [
+    {
+      "id": "R036_01",
+      "capacity": 22,
+      "type": "computer_lab"
+    },
+    {
+      "id": "R036_02",
+      "capacity": 23,
+      "type": "general"
+    },
+    {
+      "id": "R036_03",
+      "capacity": 28,
+      "type": "general"
+    },
+    {
+      "id": "R036_04",
+      "capacity": 25,
+      "type": "physics_lab"
+    },
+    {
+      "id": "R036_05",
+      "capacity": 33,
+      "type": "computer_lab"
+    },
+    {
+      "id": "R036_06",
+      "capacity": 23,
+      "type": "general"
+    },
+    {
+      "id": "R036_07",
+      "capacity": 34,
+      "type": "general"
+    }
+  ],
+  "lessons_pool": [
+    {
+      "subject": "SUBJ_036_01",
+      "teacher": "T036_04",
+      "group": "Y3-G01-C036",
+      "count": 3
+    },
+    {
+      "subject": "SUBJ_036_04",
+      "teacher": "T036_06",
+      "group": "Y3-G01-C036",
+      "count": 4
+    },
+    {
+      "subject": "SUBJ_036_03",
+      "teacher": "T036_11",
+      "group": "Y3-G01-C036",
+      "count": 3
+    },
+    {
+      "subject": "SUBJ_036_02",
+      "teacher": "T036_03",
+      "group": "Y3-G01-C036",
+      "count": 4
+    },
+    {
+      "subject": "SUBJ_036_08",
+      "teacher": "T036_02",
+      "group": "Y3-G01-C036",
+      "count": 1
+    },
+    {
+      "subject": "SUBJ_036_07",
+      "teacher": "T036_11",
+      "group": "Y3-G01-C036",
+      "count": 1
+    },
+    {
+      "subject": "SUBJ_036_06",
+      "teacher": "T036_01",
+      "group": "Y3-G01-C036",
+      "count": 4
+    },
+    {
+      "subject": "SUBJ_036_05",
+      "teacher": "T036_10",
+      "group": "Y3-G01-C036",
+      "count": 1
+    },
+    {
+      "subject": "SUBJ_036_03",
+      "teacher": "T036_11",
+      "group": "Y3-G02-C036",
+      "count": 1
+    },
+    {
+      "subject": "SUBJ_036_06",
+      "teacher": "T036_07",
+      "group": "Y3-G02-C036",
+      "count": 1
+    },
+    {
+      "subject": "SUBJ_036_05",
+      "teacher": "T036_10",
+      "group": "Y3-G02-C036",
+      "count": 3
+    },
+    {
+      "subject": "SUBJ_036_09",
+      "teacher": "T036_12",
+      "group": "Y3-G02-C036",
+      "count": 3
+    },
+    {
+      "subject": "SUBJ_036_08",
+      "teacher": "T036_02",
+      "group": "Y3-G02-C036",
+      "count": 3
+    },
+    {
+      "subject": "SUBJ_036_01",
+      "teacher": "T036_07",
+      "group": "Y3-G02-C036",
+      "count": 3
+    }
+  ],
+  "constraints": {
+    "max_daily_lessons": 6
+  }
+}

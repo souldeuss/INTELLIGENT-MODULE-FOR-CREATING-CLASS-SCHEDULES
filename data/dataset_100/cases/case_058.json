@@ -1,0 +1,203 @@
+{
+  "groups": [
+    {
+      "id": "Y3-G01-C058",
+      "students_count": 34,
+      "year": 3
+    },
+    {
+      "id": "Y3-G02-C058",
+      "students_count": 30,
+      "year": 3
+    }
+  ],
+  "subjects": [
+    {
+      "name": "Chemistry_058_01",
+      "difficulty": 4,
+      "requires_specialized": true,
+      "classroom_type": "chemistry_lab",
+      "id": "SUBJ_058_01"
+    },
+    {
+      "name": "Economics_058_02",
+      "difficulty": 3,
+      "requires_specialized": false,
+      "classroom_type": "general",
+      "id": "SUBJ_058_02"
+    },
+    {
+      "name": "Mathematics_058_03",
+      "difficulty": 3,
+      "requires_specialized": false,
+      "classroom_type": "general",
+      "id": "SUBJ_058_03"
+    },
+    {
+      "name": "Art_058_04",
+      "difficulty": 1,
+      "requires_specialized": false,
+      "classroom_type": "general",
+      "id": "SUBJ_058_04"
+    },
+    {
+      "name": "Biology_058_05",
+      "difficulty": 3,
+      "requires_specialized": true,
+      "classroom_type": "biology_lab",
+      "id": "SUBJ_058_05"
+    }
+  ],
+  "teachers": [
+    {
+      "id": "T058_01",
+      "name": "Teacher_058_01",
+      "subjects": [
+        "SUBJ_058_05",
+        "SUBJ_058_01"
+      ],
+      "max_hours_per_week": 28
+    },
+    {
+      "id": "T058_02",
+      "name": "Teacher_058_02",
+      "subjects": [
+        "SUBJ_058_01",
+        "SUBJ_058_02",
+        "SUBJ_058_05"
+      ],
+      "max_hours_per_week": 29
+    },
+    {
+      "id": "T058_03",
+      "name": "Teacher_058_03",
+      "subjects": [
+        "SUBJ_058_03",
+        "SUBJ_058_04",
+        "SUBJ_058_01",
+        "SUBJ_058_02"
+      ],
+      "max_hours_per_week": 25
+    },
+    {
+      "id": "T058_04",
+      "name": "Teacher_058_04",
+      "subjects": [
+        "SUBJ_058_04",
+        "SUBJ_058_03"
+      ],
+      "max_hours_per_week": 23
+    },
+    {
+      "id": "T058_05",
+      "name": "Teacher_058_05",
+      "subjects": [
+        "SUBJ_058_05",
+        "SUBJ_058_03"
+      ],
+      "max_hours_per_week": 24
+    },
+    {
+      "id": "T058_06",
+      "name": "Teacher_058_06",
+      "subjects": [
+        "SUBJ_058_03",
+        "SUBJ_058_02",
+        "SUBJ_058_04"
+      ],
+      "max_hours_per_week": 23
+    }
+  ],
+  "classrooms": [
+    {
+      "id": "R058_01",
+      "capacity": 29,
+      "type": "gym"
+    },
+    {
+      "id": "R058_02",
+      "capacity": 36,
+      "type": "general"
+    },
+    {
+      "id": "R058_03",
+      "capacity": 39,
+      "type": "computer_lab"
+    },
+    {
+      "id": "R058_04",
+      "capacity": 41,
+      "type": "physics_lab"
+    },
+    {
+      "id": "R058_05",
+      "capacity": 34,
+      "type": "chemistry_lab"
+    }
+  ],
+  "lessons_pool": [
+    {
+      "subject": "SUBJ_058_03",
+      "teacher": "T058_03",
+      "group": "Y3-G01-C058",
+      "count": 2
+    },
+    {
+      "subject": "SUBJ_058_02",
+      "teacher": "T058_06",
+      "group": "Y3-G01-C058",
+      "count": 3
+    },
+    {
+      "subject": "SUBJ_058_01",
+      "teacher": "T058_01",
+      "group": "Y3-G01-C058",
+      "count": 3
+    },
+    {
+      "subject": "SUBJ_058_04",
+      "teacher": "T058_04",
+      "group": "Y3-G01-C058",
+      "count": 1
+    },
+    {
+      "subject": "SUBJ_058_05",
+      "teacher": "T058_02",
+      "group": "Y3-G01-C058",
+      "count": 1
+    },
+    {
+      "subject": "SUBJ_058_05",
+      "teacher": "T058_05",
+      "group": "Y3-G02-C058",
+      "count": 2
+    },
+    {
+      "subject": "SUBJ_058_01",
+      "teacher": "T058_01",
+      "group": "Y3-G02-C058",
+      "count": 2
+    },
+    {
+      "subject": "SUBJ_058_03",
+      "teacher": "T058_03",
+      "group": "Y3-G02-C058",
+      "count": 4
+    },
+    {
+      "subject": "SUBJ_058_04",
+      "teacher": "T058_03",
+      "group": "Y3-G02-C058",
+      "count": 4
+    },
+    {
+      "subject": "SUBJ_058_02",
+      "teacher": "T058_03",
+      "group": "Y3-G02-C058",
+      "count": 4
+    }
+  ],
+  "constraints": {
+    "max_daily_lessons": 7
+  }
+}

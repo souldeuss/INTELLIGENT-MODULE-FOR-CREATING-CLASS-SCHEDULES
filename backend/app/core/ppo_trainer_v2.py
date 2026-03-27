@@ -19,11 +19,12 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from typing import List, Tuple, Optional, Dict
+from typing import Any, List, Tuple, Optional, Dict
 import logging
 
 from .actor_critic import ActorCritic
 from .environment_v2 import TimetablingEnvironmentV2
+from .model_registry import get_active_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,8 @@ class PPOTrainerV2:
         device: str = "cpu",
         progress_callback=None,
         stop_callback=None,
+        score_weights: Optional[Dict[str, float]] = None,
+        model_version: Optional[str] = None,
     ):
         self.env = env
         self.device = torch.device(device)
@@ -65,6 +68,15 @@ class PPOTrainerV2:
         self.epochs = epochs
         self.progress_callback = progress_callback
         self.stop_callback = stop_callback
+        self.model_version = model_version
+        self.score_weights = {
+            "reward_weight": 1.0,
+            "completion_weight": 100.0,
+            "hard_violation_penalty": 25.0,
+            "soft_violation_penalty": 5.0,
+        }
+        if score_weights:
+            self.score_weights.update(score_weights)
         
         # Директорія для моделей
         self.model_dir = Path("./saved_models")
@@ -72,10 +84,39 @@ class PPOTrainerV2:
         
         self._try_load_pretrained()
 
+    def _candidate_model_files(self) -> List[Path]:
+        if self.model_version:
+            model_name = self.model_version if self.model_version.endswith(".pt") else f"{self.model_version}.pt"
+            return [self.model_dir / model_name]
+
+        active_name = get_active_model_name(self.model_dir)
+        candidates = [self.model_dir / active_name]
+        fallback = self.model_dir / "actor_critic_best.pt"
+        if fallback not in candidates:
+            candidates.append(fallback)
+        return candidates
+
+    @staticmethod
+    def compute_model_score(
+        reward: float,
+        hard_violations: int,
+        soft_violations: int,
+        completion_rate: float,
+        score_weights: Dict[str, float],
+    ) -> float:
+        return (
+            float(score_weights.get("reward_weight", 1.0)) * float(reward)
+            + float(score_weights.get("completion_weight", 100.0)) * float(completion_rate)
+            - float(score_weights.get("hard_violation_penalty", 25.0)) * float(hard_violations)
+            - float(score_weights.get("soft_violation_penalty", 5.0)) * float(soft_violations)
+        )
+
     def _try_load_pretrained(self) -> bool:
         """Завантажити попередньо навчену модель з перевіркою розмірностей."""
-        model_path = self.model_dir / "actor_critic_best.pt"
-        if model_path.exists():
+        for model_path in self._candidate_model_files():
+            if not model_path.exists():
+                continue
+
             try:
                 checkpoint = torch.load(str(model_path), map_location=self.device)
                 
@@ -114,20 +155,40 @@ class PPOTrainerV2:
                     logger.warning(f"⚠️ Помилка завантаження: {e}")
             except Exception as e:
                 logger.warning(f"⚠️ Не вдалося завантажити: {e}")
+
         return False
 
-    def save_model(self, suffix: str = "best") -> Path:
+    def save_model(self, suffix: str = "best", extra_metadata: Optional[Dict[str, Any]] = None) -> Path:
         """Зберегти модель з метаданими про розмірності."""
         model_path = self.model_dir / f"actor_critic_{suffix}.pt"
+        meta_path = self.model_dir / f"meta_{suffix}.json"
         
         # Зберігаємо повний checkpoint з метаданими
         checkpoint = {
             'model_state_dict': self.model.state_dict(),
             'state_dim': self.state_dim,
             'action_dim': self.action_dim,
-            'timestamp': datetime.now().isoformat()
+            'timestamp': datetime.now().isoformat(),
+            'selection_strategy': 'combined_score',
+            'score_weights': self.score_weights,
         }
+        if extra_metadata:
+            checkpoint.update(extra_metadata)
         torch.save(checkpoint, str(model_path))
+
+        meta = {
+            "saved_at": datetime.now().isoformat(),
+            "model_file": model_path.name,
+            "state_dim": self.state_dim,
+            "action_dim": self.action_dim,
+            "selection_strategy": "combined_score",
+            "score_weights": self.score_weights,
+        }
+        if extra_metadata:
+            meta.update(extra_metadata)
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2, ensure_ascii=False)
+
         logger.info(f"💾 Збережено модель: {model_path} (state_dim={self.state_dim})")
         return model_path
 
@@ -146,11 +207,13 @@ class PPOTrainerV2:
         hard_violations_history = []
         soft_violations_history = []
         completion_rates = []
+        model_scores = []
         actor_losses = []
         critic_losses = []
         
         best_reward = float("-inf")
         best_completion = 0.0
+        best_model_score = float("-inf")
 
         logger.info(f"🚀 Початок тренування PPO V2: {num_iterations} ітерацій")
         logger.info(f"📊 Занять до планування: {self.env.total_classes_to_schedule}")
@@ -178,28 +241,46 @@ class PPOTrainerV2:
             completion_rate = final_info.get("completion_rate", 0)
             hard_violations = final_info.get("hard_violations", 0)
             soft_violations = final_info.get("soft_violations", 0)
+            model_score = self.compute_model_score(
+                reward=float(episode_reward),
+                hard_violations=int(hard_violations),
+                soft_violations=int(soft_violations),
+                completion_rate=float(completion_rate),
+                score_weights=self.score_weights,
+            )
             
             episode_rewards.append(episode_reward)
             hard_violations_history.append(hard_violations)
             soft_violations_history.append(soft_violations)
             completion_rates.append(completion_rate)
+            model_scores.append(model_score)
             actor_losses.append(float(a_loss))
             critic_losses.append(float(c_loss))
 
             if self.progress_callback:
                 self.progress_callback(iteration + 1, num_iterations)
 
-            # Збереження кращої моделі за completion rate
-            if completion_rate > best_completion or (completion_rate == best_completion and episode_reward > best_reward):
+            # Збереження кращої моделі за комбінованим score
+            if model_score > best_model_score:
                 best_reward = episode_reward
                 best_completion = completion_rate
+                best_model_score = model_score
                 try:
-                    self.save_model("best")
+                    self.save_model(
+                        "best",
+                        extra_metadata={
+                            "best_reward": float(best_reward),
+                            "best_completion": float(best_completion),
+                            "best_model_score": float(best_model_score),
+                            "hard_violations": int(hard_violations),
+                            "soft_violations": int(soft_violations),
+                        },
+                    )
                 except Exception as e:
                     logger.warning(f"⚠️ Помилка збереження: {e}")
                 logger.info(
-                    f"⭐ Нова найкраща модель! Completion: {completion_rate:.1%}, "
-                    f"Reward: {best_reward:.2f}"
+                    f"⭐ Нова найкраща модель! Score: {best_model_score:.2f}, "
+                    f"Completion: {completion_rate:.1%}, Reward: {best_reward:.2f}"
                 )
 
             if (iteration + 1) % 20 == 0:
@@ -215,12 +296,16 @@ class PPOTrainerV2:
         final_stats = {
             "best_reward": best_reward,
             "best_completion": best_completion,
+            "best_model_score": best_model_score,
             "total_iterations": len(episode_rewards),
+            "selection_strategy": "combined_score",
+            "score_weights": self.score_weights,
             "metrics": {
                 "rewards": episode_rewards,
                 "hard_violations": hard_violations_history,
                 "soft_violations": soft_violations_history,
                 "completion_rates": completion_rates,
+                "model_scores": model_scores,
                 "actor_losses": actor_losses,
                 "critic_losses": critic_losses,
             }
@@ -243,6 +328,7 @@ class PPOTrainerV2:
                 'hard_violations': [int(x) for x in hard_violations_history],
                 'soft_violations': [int(x) for x in soft_violations_history],
                 'completion_rates': [clean_value(x) for x in completion_rates],
+                'model_scores': [clean_value(x) for x in model_scores],
                 'actor_losses': [clean_value(x) for x in actor_losses],
                 'critic_losses': [clean_value(x) for x in critic_losses],
             }
@@ -252,6 +338,8 @@ class PPOTrainerV2:
                 json.dump({
                     'timestamp': datetime.now().isoformat(),
                     'iterations': len(episode_rewards),
+                    'selection_strategy': 'combined_score',
+                    'score_weights': self.score_weights,
                     'metrics': clean_metrics
                 }, f, indent=2, ensure_ascii=False)
             logger.info(f"📊 Метрики збережено: {metrics_path}")

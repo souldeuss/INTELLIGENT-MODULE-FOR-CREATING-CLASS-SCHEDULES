@@ -45,6 +45,31 @@ In FastAPI docs, try:
 2. POST `/api/teachers/` - Create a teacher
 3. POST `/api/schedule/generate` - Generate schedule with DRL
 
+## 6. Generate 100-case training dataset
+
+Run from repository root:
+
+```powershell
+python backend/dataset_generator.py --dataset-name dataset_100 --count 100 --seed 42 --train-ratio 0.8
+```
+
+Output:
+
+- `data/dataset_100/cases/case_001.json` ... `case_100.json`
+- `data/dataset_100/dataset_manifest.json`
+
+Use the generated manifest with the train/eval pipeline:
+
+```powershell
+python backend/train_eval_pipeline.py --manifest data/dataset_100/dataset_manifest.json --iterations 100
+```
+
+One-call preset (generate dataset + train in one command):
+
+```powershell
+python backend/dataset_100_preset.py --dataset-name dataset_100 --iterations 100 --seed 42 --train-ratio 0.8
+```
+
 ---
 
 ## Troubleshooting

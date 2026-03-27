@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
 import {
   ThemeProvider,
@@ -49,6 +49,7 @@ import TimetableView from "./components/TimetableView";
 import Analytics from "./components/Analytics";
 import ScheduleManager from "./components/ScheduleManager";
 import TrainingMetrics from "./components/TrainingMetrics";
+import { statsService } from "./services/api";
 
 const drawerWidth = 280;
 
@@ -132,16 +133,10 @@ const menuSections = [
         badge: null,
       },
       {
-        text: "AI Генератор",
-        icon: <PsychologyIcon />,
-        path: "/ai-generator",
-        badge: "NEW",
-      },
-      {
         text: "Конфлікти",
         icon: <WarningIcon />,
         path: "/conflicts",
-        badge: 2,
+        badge: null,
       },
     ],
   },
@@ -171,6 +166,23 @@ const menuSections = [
     ],
   },
   {
+    title: "Сценарії",
+    items: [
+      {
+        text: "Індивідуальна генерація",
+        icon: <PsychologyIcon />,
+        path: "/individual-generation",
+        badge: "NEW",
+      },
+      {
+        text: "Навчання моделі",
+        icon: <PsychologyIcon />,
+        path: "/training-metrics",
+        badge: "LIVE",
+      },
+    ],
+  },
+  {
     title: "Аналітика",
     items: [
       {
@@ -191,8 +203,48 @@ const menuSections = [
 
 function AppContent() {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [activeConflicts, setActiveConflicts] = useState<number>(0);
   const navigate = useNavigate();
   const location = useLocation();
+
+  useEffect(() => {
+    let mounted = true;
+
+    const loadConflicts = async () => {
+      try {
+        const response = await statsService.getDashboardStats();
+        if (!mounted) {
+          return;
+        }
+        const count = Number(response?.data?.active_conflicts ?? 0);
+        setActiveConflicts(Number.isFinite(count) && count > 0 ? count : 0);
+      } catch {
+        if (mounted) {
+          setActiveConflicts(0);
+        }
+      }
+    };
+
+    loadConflicts();
+    const interval = window.setInterval(loadConflicts, 10000);
+
+    return () => {
+      mounted = false;
+      window.clearInterval(interval);
+    };
+  }, []);
+
+  const resolvedMenuSections = menuSections.map((section) => ({
+    ...section,
+    items: section.items.map((item) =>
+      item.path === "/conflicts"
+        ? {
+            ...item,
+            badge: activeConflicts > 0 ? activeConflicts : null,
+          }
+        : item
+    ),
+  }));
 
   const handleDrawerToggle = () => {
     setMobileOpen(!mobileOpen);
@@ -226,7 +278,7 @@ function AppContent() {
 
       {/* Menu Sections */}
       <Box sx={{ flexGrow: 1, overflowY: "auto", py: 1 }}>
-        {menuSections.map((section, sectionIdx) => (
+        {resolvedMenuSections.map((section, sectionIdx) => (
           <Box key={section.title}>
             <Typography
               variant="overline"
@@ -366,6 +418,7 @@ function AppContent() {
         <Routes>
           <Route path="/" element={<ModernDashboard />} />
           <Route path="/timetable" element={<InteractiveTimetable />} />
+          <Route path="/individual-generation" element={<AIControlPanel />} />
           <Route path="/ai-generator" element={<AIControlPanel />} />
           <Route path="/conflicts" element={<ConflictCenter />} />
           <Route path="/courses" element={<CourseManagement />} />

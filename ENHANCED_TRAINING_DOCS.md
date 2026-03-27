@@ -5,6 +5,26 @@
 Цей документ описує вдосконалення системи навчання нейронної мережі для
 автоматичного складання розкладу занять з використанням Deep Reinforcement Learning (PPO).
 
+## Manifest Governance та Promotion Policy
+
+Пайплайн `backend/train_eval_pipeline.py` працює через manifest (`data/dataset_manifest.sample.json`) і підтримує:
+
+- `seed` для відтворюваності (random/numpy/torch)
+- `train` / `test` hold-out split
+- `sha256` перевірку датасетів перед запуском
+- policy-gating для активації моделі (`--promote`):
+    - `min_completion_rate`
+    - `max_hard_violations`
+    - `max_soft_violations`
+    - `min_score_margin` (модель проти baseline)
+
+Модель промотується в active лише якщо виконані всі критерії policy. У звіт `evaluation_report_*.json` записуються:
+
+- фактичні hash датасетів
+- середні метрики тесту
+- score margin проти baseline
+- детальний статус кожного критерію policy
+
 ## Структура модулів
 
 ```

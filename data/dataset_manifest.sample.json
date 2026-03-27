@@ -1,0 +1,29 @@
+{
+  "manifest_version": "v2",
+  "dataset_policy": "train_test_holdout",
+  "seed": 42,
+  "train": [
+    {
+      "path": "data/test_input_balanced.json",
+      "sha256": null
+    }
+  ],
+  "test": [
+    {
+      "path": "data/input.sample.json",
+      "sha256": null
+    }
+  ],
+  "scoring": {
+    "reward_weight": 1.0,
+    "completion_weight": 100.0,
+    "hard_violation_penalty": 25.0,
+    "soft_violation_penalty": 5.0
+  },
+  "promotion_policy": {
+    "min_completion_rate": 0.9,
+    "max_hard_violations": 0,
+    "max_soft_violations": 25,
+    "min_score_margin": 0.0
+  }
+}

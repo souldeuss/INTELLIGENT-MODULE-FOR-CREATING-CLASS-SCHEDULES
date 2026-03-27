@@ -38,9 +38,11 @@ import { scheduleService } from "../services/api";
 interface ScheduleFile {
   filename: string;
   created_at: string;
-  size_bytes: number;
+  size_bytes?: number;
+  size_kb?: number;
   classes_count: number;
-  meta: {
+  description?: string;
+  meta?: {
     generation_id?: number;
     best_reward?: number;
     hard_violations?: number;
@@ -70,7 +72,33 @@ const ScheduleManager: React.FC = () => {
     setLoading(true);
     try {
       const response = await scheduleService.getScheduleFiles();
-      setFiles(response.data.files || []);
+      const raw = Array.isArray(response.data)
+        ? response.data
+        : Array.isArray(response.data?.files)
+        ? response.data.files
+        : [];
+
+      const normalized: ScheduleFile[] = raw.map((file: any) => ({
+        filename: String(file.filename || ""),
+        created_at: String(file.created_at || new Date().toISOString()),
+        size_bytes:
+          typeof file.size_bytes === "number"
+            ? file.size_bytes
+            : typeof file.size_kb === "number"
+            ? Math.round(file.size_kb * 1024)
+            : 0,
+        size_kb: typeof file.size_kb === "number" ? file.size_kb : undefined,
+        classes_count: Number(file.classes_count || 0),
+        description: typeof file.description === "string" ? file.description : undefined,
+        meta:
+          file.meta && typeof file.meta === "object"
+            ? file.meta
+            : {
+                description: typeof file.description === "string" ? file.description : undefined,
+              },
+      }));
+
+      setFiles(normalized);
     } catch (error) {
       console.error("Failed to load schedule files:", error);
       setSnackbar({
@@ -280,7 +308,7 @@ const ScheduleManager: React.FC = () => {
                     />
                   </TableCell>
                   <TableCell align="center">
-                    {formatSize(file.size_bytes)}
+                    {formatSize(file.size_bytes || 0)}
                   </TableCell>
                   <TableCell align="center">
                     {file.meta && (
@@ -326,7 +354,7 @@ const ScheduleManager: React.FC = () => {
                       color="text.secondary"
                       sx={{ maxWidth: 200 }}
                     >
-                      {file.meta?.description || "-"}
+                      {file.meta?.description || file.description || "-"}
                     </Typography>
                   </TableCell>
                   <TableCell align="center">
