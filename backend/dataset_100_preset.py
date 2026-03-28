@@ -45,6 +45,8 @@ def main() -> None:
         manifest_rel,
         "--iterations",
         str(args.iterations),
+        "--iterations-mode",
+        "total",
         "--device",
         args.device,
     ]

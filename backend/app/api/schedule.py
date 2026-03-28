@@ -1,8 +1,8 @@
 """Schedule Generation API."""
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional, Dict, Any
 import numpy as np
 import threading
 import logging
@@ -64,6 +64,359 @@ else:
 # Директорія для збереження розкладів
 SCHEDULES_DIR = Path("./saved_schedules")
 SCHEDULES_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _workspace_root() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
+def _normalize_model_name(model_name: str) -> str:
+    return model_name if model_name.endswith(".pt") else f"{model_name}.pt"
+
+
+def _candidate_model_dirs() -> List[Path]:
+    root = _workspace_root()
+    candidates = [
+        root / "saved_models",
+        root / "backend" / "saved_models",
+        root / "backend" / "backend" / "saved_models",
+    ]
+
+    existing = [path for path in candidates if path.exists()]
+    if existing:
+        return existing
+
+    # Keep old behavior as fallback while creating default dir for future saves.
+    candidates[0].mkdir(parents=True, exist_ok=True)
+    return [candidates[0]]
+
+
+def _resolve_model_dir_for_schedule(
+    model_version: Optional[str] = None,
+    expected_state_dim: Optional[int] = None,
+    expected_action_dim: Optional[int] = None,
+) -> Path:
+    dirs = _candidate_model_dirs()
+
+    if model_version:
+        selected_model_path = _resolve_model_path(
+            model_version,
+            expected_state_dim=expected_state_dim,
+            expected_action_dim=expected_action_dim,
+        )
+        if selected_model_path is not None:
+            return selected_model_path.parent
+
+    if expected_state_dim is not None and expected_action_dim is not None:
+        for model_dir in dirs:
+            best_path = model_dir / "actor_critic_best.pt"
+            meta_info = _read_model_meta_dimensions_for_path(best_path)
+            if (
+                best_path.exists()
+                and meta_info.get("meta_found")
+                and meta_info.get("state_dim") == expected_state_dim
+                and meta_info.get("action_dim") == expected_action_dim
+            ):
+                return model_dir
+
+    ranked = sorted(
+        dirs,
+        key=lambda p: (
+            len(list(p.glob("actor_critic_*.pt"))),
+            max((f.stat().st_mtime for f in p.glob("actor_critic_*.pt")), default=0.0),
+        ),
+        reverse=True,
+    )
+    return ranked[0]
+
+
+def _model_exists_in_any_dir(model_version: str) -> bool:
+    target_name = _normalize_model_name(model_version)
+    return any((model_dir / target_name).exists() for model_dir in _candidate_model_dirs())
+
+
+def _list_model_candidates(model_version: str) -> List[Path]:
+    target_name = _normalize_model_name(model_version)
+    candidates: List[Path] = []
+    for model_dir in _candidate_model_dirs():
+        candidate = model_dir / target_name
+        if candidate.exists():
+            candidates.append(candidate)
+    return candidates
+
+
+def _read_model_meta_dimensions_for_path(model_path: Path) -> Dict[str, Any]:
+    if not model_path.exists():
+        return {
+            "model_found": False,
+            "meta_found": False,
+            "state_dim": None,
+            "action_dim": None,
+            "model_path": str(model_path),
+        }
+
+    stem = model_path.stem
+    run_id: Optional[str] = None
+    if stem.startswith("actor_critic_"):
+        run_id = stem.replace("actor_critic_", "", 1)
+    elif stem == "actor_critic_best":
+        run_id = "best"
+
+    if not run_id:
+        return {
+            "model_found": True,
+            "meta_found": False,
+            "state_dim": None,
+            "action_dim": None,
+            "model_path": str(model_path),
+        }
+
+    meta_path = model_path.parent / f"meta_{run_id}.json"
+    if not meta_path.exists():
+        return {
+            "model_found": True,
+            "meta_found": False,
+            "state_dim": None,
+            "action_dim": None,
+            "model_path": str(model_path),
+        }
+
+    try:
+        with open(meta_path, "r", encoding="utf-8") as file:
+            payload = json.load(file)
+    except Exception:
+        return {
+            "model_found": True,
+            "meta_found": False,
+            "state_dim": None,
+            "action_dim": None,
+            "model_path": str(model_path),
+        }
+
+    raw_state_dim = payload.get("state_dim")
+    raw_action_dim = payload.get("action_dim")
+    state_dim = int(raw_state_dim) if isinstance(raw_state_dim, (int, float)) else None
+    action_dim = int(raw_action_dim) if isinstance(raw_action_dim, (int, float)) else None
+
+    return {
+        "model_found": True,
+        "meta_found": True,
+        "state_dim": state_dim,
+        "action_dim": action_dim,
+        "model_path": str(model_path),
+    }
+
+
+def _resolve_model_path(
+    model_version: str,
+    expected_state_dim: Optional[int] = None,
+    expected_action_dim: Optional[int] = None,
+) -> Optional[Path]:
+    candidates = _list_model_candidates(model_version)
+    if not candidates:
+        return None
+
+    if expected_state_dim is not None and expected_action_dim is not None:
+        for candidate in candidates:
+            meta = _read_model_meta_dimensions_for_path(candidate)
+            if (
+                meta.get("meta_found")
+                and meta.get("state_dim") == expected_state_dim
+                and meta.get("action_dim") == expected_action_dim
+            ):
+                return candidate
+
+    return candidates[0]
+
+
+def _extract_model_run_id(model_version: str) -> Optional[str]:
+    normalized = _normalize_model_name(model_version)
+    stem = Path(normalized).stem
+    if stem.startswith("actor_critic_"):
+        return stem.replace("actor_critic_", "", 1)
+    if stem == "actor_critic_best":
+        return "best"
+    return None
+
+
+def _read_model_meta_dimensions(model_version: str) -> Dict[str, Any]:
+    model_path = _resolve_model_path(model_version)
+    if not model_path:
+        return {
+            "model_found": False,
+            "meta_found": False,
+            "state_dim": None,
+            "action_dim": None,
+            "model_path": None,
+        }
+    return _read_model_meta_dimensions_for_path(model_path)
+
+
+def _build_environment_dimensions(db: Session) -> Dict[str, int]:
+    courses = db.query(Course).all()
+    teachers = db.query(Teacher).all()
+    groups = db.query(StudentGroup).all()
+    classrooms = db.query(Classroom).all()
+    timeslots = db.query(Timeslot).filter(Timeslot.is_active == True).all()
+
+    if not all([courses, teachers, groups, classrooms, timeslots]):
+        raise ValueError("Insufficient data: ensure courses, teachers, groups, classrooms, and timeslots exist")
+
+    course_teacher_map = {}
+    course_group_map = {}
+
+    for course in courses:
+        if hasattr(course, "teachers") and course.teachers:
+            course_teacher_map[course.id] = [t.id for t in course.teachers]
+        else:
+            course_teacher_map[course.id] = [t.id for t in teachers]
+
+        if hasattr(course, "groups") and course.groups:
+            course_group_map[course.id] = [g.id for g in course.groups]
+        else:
+            course_group_map[course.id] = [g.id for g in groups]
+
+    if USING_V2:
+        env = TimetablingEnvironment(
+            courses,
+            teachers,
+            groups,
+            classrooms,
+            timeslots,
+            course_teacher_map=course_teacher_map,
+            course_group_map=course_group_map,
+        )
+    else:
+        env = TimetablingEnvironment(courses, teachers, groups, classrooms, timeslots)
+
+    state_dim = env.state_dim if (USING_V2 or USING_OPTIMIZED) else env._get_state().shape[0]
+    raw_action_dim = env.n_courses * env.n_teachers * env.n_groups * env.n_classrooms * env.n_timeslots
+    action_dim = min(raw_action_dim, 4096)
+
+    return {
+        "state_dim": int(state_dim),
+        "action_dim": int(action_dim),
+        "raw_action_dim": int(raw_action_dim),
+    }
+
+
+def _ensure_pretrained_model_loaded(trainer, model_version: str = None) -> None:
+    """Переконатися, що trainer завантажив сумісну попередньо навчену модель."""
+    expected_state_dim = getattr(trainer, "state_dim", None)
+    expected_action_dim = getattr(trainer, "action_dim", None)
+
+    if not isinstance(expected_state_dim, int):
+        expected_state_dim = None
+    if not isinstance(expected_action_dim, int):
+        expected_action_dim = None
+
+    if hasattr(trainer, "model_dir"):
+        trainer.model_dir = _resolve_model_dir_for_schedule(
+            model_version,
+            expected_state_dim=expected_state_dim,
+            expected_action_dim=expected_action_dim,
+        )
+
+    if not hasattr(trainer, "_try_load_pretrained"):
+        logger.warning("⚠️ Trainer не має перевірки pretrained-моделі, продовжуємо без валідації")
+        return
+
+    loaded = trainer._try_load_pretrained()
+    if loaded:
+        return
+
+    if model_version:
+        if not _model_exists_in_any_dir(model_version):
+            raise ValueError(
+                f"Модель '{model_version}' не знайдено у директоріях saved_models. Перевірте назву моделі."
+            )
+        current_state_dim = expected_state_dim
+        current_action_dim = expected_action_dim
+        dims_hint = ""
+        if isinstance(current_state_dim, int) and isinstance(current_action_dim, int):
+            dims_hint = f" Поточні розмірності середовища: state_dim={current_state_dim}, action_dim={current_action_dim}."
+        raise ValueError(
+            f"Модель '{model_version}' знайдено, але не вдалося завантажити. Ймовірно, вона несумісна з поточними даними (state/action dimensions)."
+            f" Створіть/натренуйте нову модель під поточний набір даних.{dims_hint}"
+        )
+
+    raise ValueError(
+        "Не знайдено сумісної натренованої моделі. Спочатку виконайте навчання у вкладці Training або вкажіть model_version."
+    )
+
+
+@router.get("/model-compatibility")
+def check_model_compatibility(
+    model_version: str = Query(..., description="Model name, e.g. actor_critic_20260328_015845.pt"),
+    db: Session = Depends(get_db),
+):
+    """Preflight compatibility check between selected model and current DB environment dimensions."""
+    try:
+        env_dims = _build_environment_dimensions(db)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to build environment dimensions: {exc}")
+
+    model_path = _resolve_model_path(
+        model_version,
+        expected_state_dim=env_dims.get("state_dim"),
+        expected_action_dim=env_dims.get("action_dim"),
+    )
+    if model_path is not None:
+        meta_dims = _read_model_meta_dimensions_for_path(model_path)
+    else:
+        meta_dims = {
+            "model_found": False,
+            "meta_found": False,
+            "state_dim": None,
+            "action_dim": None,
+            "model_path": None,
+        }
+
+    if not meta_dims.get("model_found"):
+        return {
+            "model_version": _normalize_model_name(model_version),
+            "compatible": False,
+            "reason": "model_not_found",
+            "detail": "Model file not found in saved_models directories",
+            "current": env_dims,
+            "model": meta_dims,
+        }
+
+    if not meta_dims.get("meta_found"):
+        return {
+            "model_version": _normalize_model_name(model_version),
+            "compatible": False,
+            "reason": "meta_not_found",
+            "detail": "Model metadata (meta_*.json) not found; cannot verify dimensions",
+            "current": env_dims,
+            "model": meta_dims,
+        }
+
+    compatible = (
+        meta_dims.get("state_dim") == env_dims.get("state_dim")
+        and meta_dims.get("action_dim") == env_dims.get("action_dim")
+    )
+
+    detail = "Model dimensions are compatible with current DB environment"
+    reason = "ok"
+    if not compatible:
+        reason = "dimension_mismatch"
+        detail = (
+            "Model dimensions do not match current DB environment. "
+            f"Model: state_dim={meta_dims.get('state_dim')}, action_dim={meta_dims.get('action_dim')}; "
+            f"Current: state_dim={env_dims.get('state_dim')}, action_dim={env_dims.get('action_dim')}"
+        )
+
+    return {
+        "model_version": _normalize_model_name(model_version),
+        "compatible": compatible,
+        "reason": reason,
+        "detail": detail,
+        "current": env_dims,
+        "model": meta_dims,
+    }
 
 
 def _auto_export_schedule(db: Session, generation_id: int, stats: dict):
@@ -252,8 +605,8 @@ def _run_generation(
         def check_stop():
             return _stop_flags.get(generation_id, False)
 
-        # Навчання моделі
-        logger.info(f"🎓 Початок тренування на {iterations} ітераціях...")
+        # Індивідуальна генерація: inference-only з натренованою моделлю (без донавчання)
+        logger.info("🧠 Індивідуальна генерація: завантаження натренованої моделі (без навчання)...")
         trainer = PPOTrainer(
             env,
             state_dim,
@@ -263,7 +616,14 @@ def _run_generation(
             stop_callback=check_stop,
             model_version=model_version,
         )
-        episode_rewards, stats = trainer.train(num_iterations=iterations)
+        _ensure_pretrained_model_loaded(trainer, model_version=model_version)
+        stats = {
+            "best_reward": 0.0,
+            "final_hard_violations": 0,
+            "final_soft_violations": 0,
+            "completion_rate": 0.0,
+            "best_model_score": 0.0,
+        }
         
         # Перевірка чи було зупинено
         if check_stop():
@@ -277,7 +637,10 @@ def _run_generation(
             _stop_flags.pop(generation_id, None)
             return
 
-        logger.info(f"✅ Тренування завершено! Best reward: {stats.get('best_reward', 0):.2f}")
+        generation.current_iteration = 1
+        db.commit()
+
+        logger.info("✅ Натреновану модель успішно завантажено")
 
         # Генерація фінального розкладу
         logger.info("📅 Генерація фінального розкладу...")
@@ -293,13 +656,14 @@ def _run_generation(
 
         logger.info(f"📋 Згенеровано {len(schedule_actions)} занять")
 
-        # Видалення старого розкладу (якщо preserve_locked=False)
-        if not preserve_locked:
-            deleted = db.query(ScheduledClass).delete()
-            logger.info(f"🗑️ Видалено {deleted} старих занять")
-        elif use_existing:
+        # Перед збереженням нового розкладу завжди очищаємо замінювані заняття,
+        # щоб уникнути нашарування нової генерації поверх існуючого розкладу.
+        if preserve_locked:
             deleted = db.query(ScheduledClass).filter(ScheduledClass.is_locked == False).delete()
-            logger.info(f"🗑️ Видалено {deleted} незафіксованих занять")
+            logger.info(f"🗑️ Видалено {deleted} незафіксованих занять перед записом нової генерації")
+        else:
+            deleted = db.query(ScheduledClass).delete()
+            logger.info(f"🗑️ Видалено {deleted} старих занять перед записом нової генерації")
 
         # Збереження нових занять
         for action in schedule_actions:
@@ -315,6 +679,7 @@ def _run_generation(
 
         # Оновлення статусу генерації
         generation.status = "completed"
+        generation.current_iteration = max(iterations, 1)
         generation.final_score = stats.get("best_model_score", stats.get("best_reward", 0))
         
         # V2 версія має інші ключі в stats

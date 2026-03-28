@@ -283,6 +283,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train/evaluate DRL from JSON manifest")
     parser.add_argument("--manifest", default="data/dataset_manifest.sample.json")
     parser.add_argument("--iterations", type=int, default=300)
+    parser.add_argument(
+        "--iterations-mode",
+        choices=["per-case", "total"],
+        default="per-case",
+        help="How to interpret --iterations: for each train case or for all train cases combined",
+    )
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--promote", action="store_true", help="Activate trained model if evaluation passes")
     args = parser.parse_args()
@@ -301,8 +307,32 @@ def main() -> None:
     score_weights = prepared_manifest["scoring"]
     promotion_policy = prepared_manifest["promotion_policy"]
 
+    train_iterations_by_case: List[int] = []
+    if args.iterations_mode == "total":
+        train_case_count = max(len(train_files), 1)
+        base = args.iterations // train_case_count
+        remainder = args.iterations % train_case_count
+        for idx in range(len(train_files)):
+            train_iterations_by_case.append(max(1, base + (1 if idx < remainder else 0)))
+    else:
+        train_iterations_by_case = [args.iterations for _ in train_files]
+
+    print(
+        f"[PRESET_PROGRESS] TRAIN_PLAN cases={len(train_files)} "
+        f"effective_iterations={sum(train_iterations_by_case)} mode={args.iterations_mode}",
+        flush=True,
+    )
+
     train_reports: List[Dict[str, float]] = []
-    for case in train_files:
+    for case_idx, case in enumerate(train_files):
+        case_num = case_idx + 1
+        case_iterations = train_iterations_by_case[case_idx] if case_idx < len(train_iterations_by_case) else args.iterations
+        print(
+            f"[PRESET_PROGRESS] TRAIN_START case={case_num}/{len(train_files)} "
+            f"iterations={case_iterations} path={case}",
+            flush=True,
+        )
+
         env = _build_env(str(root / case))
         trainer = PPOTrainerV2(
             env,
@@ -311,14 +341,19 @@ def main() -> None:
             device=args.device,
             score_weights=score_weights,
         )
-        _, stats = trainer.train(num_iterations=args.iterations)
+        _, stats = trainer.train(num_iterations=case_iterations)
         train_reports.append(
             {
                 "case": case,
+                "iterations": int(case_iterations),
                 "best_reward": float(stats.get("best_reward", 0.0)),
                 "best_model_score": float(stats.get("best_model_score", 0.0)),
                 "best_completion": float(stats.get("best_completion", 0.0)),
             }
+        )
+        print(
+            f"[PRESET_PROGRESS] TRAIN_DONE case={case_num}/{len(train_files)} path={case}",
+            flush=True,
         )
 
     model_dir = _resolve_model_dir(root)
@@ -405,6 +440,9 @@ def main() -> None:
             "test_entries": prepared_manifest["test_entries"],
         },
         "summary": {
+            "iterations_mode": args.iterations_mode,
+            "requested_iterations": int(args.iterations),
+            "effective_train_iterations": int(sum(train_iterations_by_case)),
             "avg_model_score": avg_model_score,
             "avg_baseline_score": avg_baseline_score,
             "score_margin": avg_model_score - avg_baseline_score,
@@ -424,6 +462,10 @@ def main() -> None:
     with open(report_path, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2, ensure_ascii=False)
 
+    print(
+        f"[PRESET_PROGRESS] TRAIN_RESULT run_id={run_id} model_version={versioned_name}",
+        flush=True,
+    )
     print(json.dumps(report["summary"], indent=2, ensure_ascii=False))
     print(f"Report saved to: {report_path}")
 

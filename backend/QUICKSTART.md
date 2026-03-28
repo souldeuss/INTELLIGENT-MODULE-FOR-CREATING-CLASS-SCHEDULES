@@ -70,6 +70,8 @@ One-call preset (generate dataset + train in one command):
 python backend/dataset_100_preset.py --dataset-name dataset_100 --iterations 100 --seed 42 --train-ratio 0.8
 ```
 
+Note: in preset mode, `--iterations` is interpreted as total iterations across all train cases.
+
 ---
 
 ## Troubleshooting

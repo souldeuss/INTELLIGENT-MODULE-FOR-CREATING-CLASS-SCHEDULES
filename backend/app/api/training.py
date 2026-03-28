@@ -22,6 +22,7 @@ import json
 import logging
 import subprocess
 import sys
+import re
 from uuid import uuid4
 
 from ..core.training_metrics import get_metrics_collector, TrainingMetricsCollector
@@ -290,6 +291,118 @@ def _build_history_from_legacy(legacy_data: Dict[str, Any]) -> Dict[str, List[An
     return history
 
 
+def _extract_run_id(model_version: str) -> Optional[str]:
+    match = re.search(r"(\d{8}_\d{6})", model_version or "")
+    return match.group(1) if match else None
+
+
+def _resolve_evaluation_report(model_version: str) -> Optional[Path]:
+    run_id = _extract_run_id(model_version)
+    if not run_id:
+        return None
+
+    candidate_files = [
+        Path(f"./saved_models/evaluation_report_{run_id}.json"),
+        Path(f"./backend/saved_models/evaluation_report_{run_id}.json"),
+        Path(f"./backend/backend/saved_models/evaluation_report_{run_id}.json"),
+    ]
+
+    for report_path in candidate_files:
+        if report_path.exists():
+            return report_path
+    return None
+
+
+def _build_history_from_evaluation_report(report_data: Dict[str, Any]) -> Dict[str, List[Any]]:
+    reports = report_data.get("train_reports") if isinstance(report_data.get("train_reports"), list) else []
+
+    rewards: List[Optional[float]] = []
+    completion_rate: List[Optional[float]] = []
+    success_count: List[int] = []
+    success_rate: List[Optional[float]] = []
+    hard_violations: List[Optional[int]] = []
+    soft_violations: List[Optional[int]] = []
+
+    cumulative_success = 0
+    for idx, item in enumerate(reports):
+        reward = item.get("best_reward")
+        reward_value = float(reward) if isinstance(reward, (int, float)) else None
+        rewards.append(reward_value)
+
+        completion = item.get("best_completion")
+        completion_percent: Optional[float] = None
+        if isinstance(completion, (int, float)):
+            raw_completion = float(completion)
+            completion_percent = raw_completion * 100.0 if raw_completion <= 1.0 else raw_completion
+            if raw_completion >= 0.999:
+                cumulative_success += 1
+        success_count.append(cumulative_success)
+        success_rate.append(round((cumulative_success / (idx + 1)) * 100.0, 2))
+        completion_rate.append(completion_percent)
+
+        hard_value = item.get("hard_violations")
+        soft_value = item.get("soft_violations")
+        hard_violations.append(int(hard_value) if isinstance(hard_value, (int, float)) else None)
+        soft_violations.append(int(soft_value) if isinstance(soft_value, (int, float)) else None)
+
+    average_reward: List[Optional[float]] = []
+    running_sum = 0.0
+    running_count = 0
+    for reward in rewards:
+        if isinstance(reward, (int, float)):
+            running_sum += float(reward)
+            running_count += 1
+        average_reward.append((running_sum / running_count) if running_count else None)
+
+    total_points = len(rewards)
+
+    return {
+        "iteration": list(range(total_points)),
+        "policy_loss": [None] * total_points,
+        "value_loss": [None] * total_points,
+        "total_loss": [None] * total_points,
+        "episode_reward": rewards,
+        "average_reward": average_reward,
+        "learning_rate": [None] * total_points,
+        "hard_violations": hard_violations,
+        "soft_violations": soft_violations,
+        "completion_rate": completion_rate,
+        "success_count": success_count,
+        "success_rate": success_rate,
+    }
+
+
+def _get_history_by_model_version(model_version: str) -> Dict[str, Any]:
+    model_dir = _resolve_model_dir()
+    active_model = get_active_model_name(model_dir)
+    selected_model = model_version if model_version.endswith(".pt") else f"{model_version}.pt"
+
+    collector = get_metrics_collector()
+
+    # Active model may have live collector data.
+    if selected_model == active_model:
+        live_history = collector.get_metrics_history(metric_names=None, last_n=None)
+        has_live_data = any(isinstance(v, list) and len(v) > 0 for v in live_history.values())
+        if has_live_data:
+            return live_history
+
+    report_path = _resolve_evaluation_report(selected_model)
+    if report_path:
+        with open(report_path, "r", encoding="utf-8") as f:
+            report_data = json.load(f)
+        return _build_history_from_evaluation_report(report_data)
+
+    if selected_model == active_model:
+        legacy_data = _load_legacy_training_metrics()
+        if legacy_data:
+            return _build_history_from_legacy(legacy_data)
+
+    raise HTTPException(
+        status_code=404,
+        detail=f"Історію метрик для моделі '{selected_model}' не знайдено",
+    )
+
+
 def _derive_success_series(hard_violations: List[Any]) -> Dict[str, List[Any]]:
     """Build cumulative success count and success rate by iteration.
 
@@ -320,16 +433,28 @@ def _derive_success_series(hard_violations: List[Any]) -> Dict[str, List[Any]]:
 
 
 def _resolve_model_dir() -> Path:
+    root = _workspace_root()
     candidates = [
-        Path("./saved_models"),
-        Path("./backend/saved_models"),
-        Path("./backend/backend/saved_models"),
+        root / "saved_models",
+        root / "backend" / "saved_models",
+        root / "backend" / "backend" / "saved_models",
     ]
 
-    for path in candidates:
-        if path.exists():
-            path.mkdir(parents=True, exist_ok=True)
-            return path
+    existing: List[Path] = [path for path in candidates if path.exists()]
+    if existing:
+        # Prefer the directory with the largest number of versioned artifacts.
+        # This keeps UI model lists complete even when backend cwd differs.
+        ranked = sorted(
+            existing,
+            key=lambda p: (
+                len(list(p.glob("actor_critic_*.pt"))),
+                max((f.stat().st_mtime for f in p.glob("actor_critic_*.pt")), default=0.0),
+            ),
+            reverse=True,
+        )
+        selected = ranked[0]
+        selected.mkdir(parents=True, exist_ok=True)
+        return selected
 
     default_path = candidates[0]
     default_path.mkdir(parents=True, exist_ok=True)
@@ -390,17 +515,87 @@ class Dataset100PresetRequest(BaseModel):
     regenerate_dataset: bool = Field(True)
 
 
-def _start_dataset_100_preset_job(payload: Dataset100PresetRequest) -> Dict[str, Any]:
+class ModelTrainingRequest(BaseModel):
+    iterations: int = Field(100, ge=10, le=10000)
+    seed: int = Field(42)
+    train_ratio: float = Field(0.8, gt=0.0, lt=1.0)
+    dataset_size_mode: str = Field("100", description="100 | 1000 | compatible_100 | compatible_1000 | custom")
+    custom_case_count: Optional[int] = Field(None, ge=2, le=10000)
+    dataset_name: Optional[str] = Field(None)
+    device: str = Field("cpu")
+    promote: bool = Field(False)
+    regenerate_dataset: bool = Field(True)
+    iterations_mode: str = Field("total", description="total | per-case")
+
+
+def _resolve_dataset_selection(payload: ModelTrainingRequest) -> Dict[str, Any]:
+    mode = (payload.dataset_size_mode or "").strip().lower()
+    if mode not in {"100", "1000", "compatible_100", "compatible_1000", "custom"}:
+        raise HTTPException(
+            status_code=400,
+            detail="dataset_size_mode must be one of: 100, 1000, compatible_100, compatible_1000, custom",
+        )
+
+    if mode == "100":
+        case_count = 100
+    elif mode == "1000":
+        case_count = 1000
+    elif mode == "compatible_100":
+        case_count = 100
+    elif mode == "compatible_1000":
+        case_count = 1000
+    else:
+        if payload.custom_case_count is None:
+            raise HTTPException(status_code=400, detail="custom_case_count is required when dataset_size_mode=custom")
+        case_count = int(payload.custom_case_count)
+
+    default_dataset_name = f"dataset_{case_count}"
+    if mode == "compatible_100":
+        default_dataset_name = "dataset_compatible_100"
+    elif mode == "compatible_1000":
+        default_dataset_name = "dataset_compatible_1000"
+
+    dataset_name = (payload.dataset_name or default_dataset_name).strip()
+    if not dataset_name:
+        dataset_name = default_dataset_name
+
+    iterations_mode = (payload.iterations_mode or "total").strip().lower()
+    if iterations_mode not in {"total", "per-case"}:
+        raise HTTPException(status_code=400, detail="iterations_mode must be one of: total, per-case")
+
+    return {
+        "dataset_name": dataset_name,
+        "case_count": case_count,
+        "iterations_mode": iterations_mode,
+    }
+
+
+def _start_model_training_job(payload: ModelTrainingRequest) -> Dict[str, Any]:
     from dataset_generator import generate_dataset_package
 
     root = _workspace_root()
-    manifest_path = root / "data" / payload.dataset_name / "dataset_manifest.json"
+    dataset_info = _resolve_dataset_selection(payload)
+    dataset_name = dataset_info["dataset_name"]
+    case_count = dataset_info["case_count"]
+    iterations_mode = dataset_info["iterations_mode"]
+    dataset_mode = (payload.dataset_size_mode or "").strip().lower()
 
-    if payload.regenerate_dataset or not manifest_path.exists():
+    manifest_path = root / "data" / dataset_name / "dataset_manifest.json"
+
+    if dataset_mode in {"compatible_100", "compatible_1000"}:
+        if not manifest_path.exists():
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Compatible dataset manifest not found: {manifest_path}. "
+                    "Generate it first with backend/generate_compatible_datasets.py or switch dataset mode."
+                ),
+            )
+    elif payload.regenerate_dataset or not manifest_path.exists():
         generate_dataset_package(
             workspace_root=root,
-            dataset_name=payload.dataset_name,
-            count=100,
+            dataset_name=dataset_name,
+            count=case_count,
             seed=payload.seed,
             train_ratio=payload.train_ratio,
         )
@@ -408,7 +603,7 @@ def _start_dataset_100_preset_job(payload: Dataset100PresetRequest) -> Dict[str,
     job_id = uuid4().hex
     logs_dir = root / "backend" / "training_metrics" / "preset_runs"
     logs_dir.mkdir(parents=True, exist_ok=True)
-    log_path = logs_dir / f"dataset100_{job_id}.log"
+    log_path = logs_dir / f"model_training_{job_id}.log"
 
     manifest_rel = manifest_path.relative_to(root).as_posix()
     command: List[str] = [
@@ -418,6 +613,8 @@ def _start_dataset_100_preset_job(payload: Dataset100PresetRequest) -> Dict[str,
         manifest_rel,
         "--iterations",
         str(payload.iterations),
+        "--iterations-mode",
+        iterations_mode,
         "--device",
         payload.device,
     ]
@@ -440,8 +637,11 @@ def _start_dataset_100_preset_job(payload: Dataset100PresetRequest) -> Dict[str,
         "created_at": datetime.now().isoformat(),
         "command": command,
         "manifest": manifest_rel,
-        "dataset_name": payload.dataset_name,
+        "dataset_name": dataset_name,
+        "dataset_size_mode": payload.dataset_size_mode,
+        "dataset_size": case_count,
         "iterations": payload.iterations,
+        "iterations_mode": iterations_mode,
         "seed": payload.seed,
     }
 
@@ -450,15 +650,34 @@ def _start_dataset_100_preset_job(payload: Dataset100PresetRequest) -> Dict[str,
         "status": "running",
         "pid": process.pid,
         "manifest": manifest_rel,
-        "dataset_name": payload.dataset_name,
+        "dataset_name": dataset_name,
+        "dataset_size_mode": payload.dataset_size_mode,
+        "dataset_size": case_count,
         "iterations": payload.iterations,
+        "iterations_mode": iterations_mode,
         "seed": payload.seed,
         "command": command,
         "log_path": str(log_path),
     }
 
 
-def _read_dataset_100_preset_job(job_id: str) -> Dict[str, Any]:
+def _start_dataset_100_preset_job(payload: Dataset100PresetRequest) -> Dict[str, Any]:
+    generic_payload = ModelTrainingRequest(
+        iterations=payload.iterations,
+        seed=payload.seed,
+        train_ratio=payload.train_ratio,
+        dataset_size_mode="100",
+        custom_case_count=100,
+        dataset_name=payload.dataset_name,
+        device=payload.device,
+        promote=payload.promote,
+        regenerate_dataset=payload.regenerate_dataset,
+        iterations_mode="total",
+    )
+    return _start_model_training_job(generic_payload)
+
+
+def _read_training_job(job_id: str) -> Dict[str, Any]:
     job = _preset_jobs.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Preset job not found")
@@ -466,11 +685,15 @@ def _read_dataset_100_preset_job(job_id: str) -> Dict[str, Any]:
     process: subprocess.Popen[str] = job["process"]
     return_code = process.poll()
     status = "running" if return_code is None else ("completed" if return_code == 0 else "failed")
+    if job.get("stopped"):
+        status = "stopped"
 
     if return_code is not None:
         log_file = job.get("log_file")
         if log_file and not log_file.closed:
             log_file.close()
+
+    progress = _extract_dataset_100_preset_progress(job.get("log_path"), status)
 
     return {
         "job_id": job_id,
@@ -478,12 +701,128 @@ def _read_dataset_100_preset_job(job_id: str) -> Dict[str, Any]:
         "pid": process.pid,
         "return_code": return_code,
         "created_at": job.get("created_at"),
+        "stopped_at": job.get("stopped_at"),
         "dataset_name": job.get("dataset_name"),
         "manifest": job.get("manifest"),
         "iterations": job.get("iterations"),
+        "iterations_mode": job.get("iterations_mode"),
         "seed": job.get("seed"),
+        "dataset_size_mode": job.get("dataset_size_mode"),
+        "dataset_size": job.get("dataset_size"),
         "command": job.get("command"),
         "log_path": job.get("log_path"),
+        **progress,
+    }
+
+
+def _stop_training_job(job_id: str) -> Dict[str, Any]:
+    job = _preset_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Training job not found")
+
+    process: subprocess.Popen[str] = job["process"]
+    if process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=3)
+
+    log_file = job.get("log_file")
+    if log_file and not log_file.closed:
+        log_file.close()
+
+    job["stopped"] = True
+    job["stopped_at"] = datetime.now().isoformat()
+    return _read_training_job(job_id)
+
+
+def _read_dataset_100_preset_job(job_id: str) -> Dict[str, Any]:
+    return _read_training_job(job_id)
+
+
+def _read_log_tail_text(log_path: str, max_bytes: int = 256 * 1024) -> str:
+    path = Path(log_path)
+    if not path.exists() or not path.is_file():
+        return ""
+
+    with open(path, "rb") as file:
+        file.seek(0, 2)
+        file_size = file.tell()
+        offset = max(file_size - max_bytes, 0)
+        file.seek(offset)
+        data = file.read()
+
+    # Keep parser resilient to mixed encodings and terminal control bytes.
+    return data.decode("utf-8", errors="ignore")
+
+
+def _extract_dataset_100_preset_progress(log_path: Optional[str], status: str) -> Dict[str, Any]:
+    if not log_path:
+        return {}
+
+    text = _read_log_tail_text(log_path)
+    if not text:
+        if status == "completed":
+            return {"progress_percent": 100.0}
+        return {}
+
+    plan_matches = re.findall(r"\[PRESET_PROGRESS\]\s+TRAIN_PLAN\s+cases=(\d+)\s+effective_iterations=(\d+)\s+mode=([a-z\-]+)", text)
+    start_matches = re.findall(r"\[PRESET_PROGRESS\]\s+TRAIN_START\s+case=(\d+)/(\d+)\s+iterations=(\d+)", text)
+    done_matches = re.findall(r"\[PRESET_PROGRESS\]\s+TRAIN_DONE\s+case=(\d+)/(\d+)", text)
+    result_matches = re.findall(
+        r"\[PRESET_PROGRESS\]\s+TRAIN_RESULT\s+run_id=([^\s]+)\s+model_version=([^\s]+)",
+        text,
+    )
+
+    total_cases = 0
+    effective_iterations = None
+    iterations_mode = None
+    if plan_matches:
+        last_plan = plan_matches[-1]
+        total_cases = int(last_plan[0])
+        effective_iterations = int(last_plan[1])
+        iterations_mode = last_plan[2]
+
+    if total_cases == 0 and start_matches:
+        total_cases = int(start_matches[-1][1])
+    if total_cases == 0 and done_matches:
+        total_cases = int(done_matches[-1][1])
+
+    done_cases = max((int(item[0]) for item in done_matches), default=0)
+    current_case = max((int(item[0]) for item in start_matches), default=0)
+
+    if status == "completed" and total_cases > 0:
+        done_cases = total_cases
+    elif status == "completed" and total_cases == 0:
+        return {
+            "progress_percent": 100.0,
+            "effective_iterations": effective_iterations,
+            "iterations_mode": iterations_mode,
+        }
+
+    progress_percent = None
+    remaining_cases = None
+    if total_cases > 0:
+        if status == "completed":
+            progress_percent = 100.0
+            remaining_cases = 0
+        else:
+            # Report progress by completed train cases to avoid over-promising mid-case completion.
+            progress_percent = round((done_cases / total_cases) * 100.0, 2)
+            remaining_cases = max(total_cases - done_cases, 0)
+
+    return {
+        "cases_total": total_cases if total_cases > 0 else None,
+        "cases_done": done_cases,
+        "current_case": current_case if current_case > 0 else None,
+        "remaining_cases": remaining_cases,
+        "progress_percent": progress_percent,
+        "effective_iterations": effective_iterations,
+        "iterations_mode": iterations_mode,
+        "run_id": result_matches[-1][0] if result_matches else None,
+        "model_version": result_matches[-1][1] if result_matches else None,
     }
 
 
@@ -494,6 +833,37 @@ async def start_dataset_100_preset(payload: Dataset100PresetRequest):
         return _start_dataset_100_preset_job(payload)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to start dataset-100 preset: {e}")
+
+
+@router.post("/models/create")
+async def create_model_training_job(payload: ModelTrainingRequest):
+    """Створити та запустити нову модель: підготовка датасету + запуск train/eval пайплайну."""
+    try:
+        return _start_model_training_job(payload)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to start model training: {e}")
+
+
+@router.get("/models/create/jobs")
+async def list_model_training_jobs():
+    """Список усіх модельних тренувальних job-ів."""
+    return {
+        "jobs": [_read_training_job(job_id) for job_id in list(_preset_jobs.keys())]
+    }
+
+
+@router.get("/models/create/status/{job_id}")
+async def get_model_training_status(job_id: str):
+    """Статус тренувального job для створення моделі."""
+    return _read_training_job(job_id)
+
+
+@router.post("/models/create/stop/{job_id}")
+async def stop_model_training_job(job_id: str):
+    """Явна зупинка тренувального job створення моделі."""
+    return _stop_training_job(job_id)
 
 
 @router.get("/presets/dataset-100/jobs")
@@ -534,6 +904,7 @@ async def get_current_metrics():
 async def get_metrics_history(
     metrics: str = Query("all", description="Список метрик через кому або 'all'"),
     last_n: int = Query(None, ge=1, le=10000, description="Останні N записів"),
+    model_version: Optional[str] = Query(None, description="Назва моделі для історії (наприклад actor_critic_20260327_234422.pt)"),
 ):
     """
     Отримати історію метрик.
@@ -542,20 +913,29 @@ async def get_metrics_history(
         metrics: Список метрик (policy_loss, value_loss, entropy, episode_reward, etc.)
         last_n: Кількість останніх записів
     """
-    collector = get_metrics_collector()
-    
     if metrics == "all":
         metric_names = None
     else:
         metric_names = [m.strip() for m in metrics.split(",")]
-    
-    history = collector.get_metrics_history(metric_names=metric_names, last_n=last_n)
 
-    has_live_data = any(isinstance(v, list) and len(v) > 0 for v in history.values())
-    if not has_live_data:
-        legacy_data = _load_legacy_training_metrics()
-        if legacy_data:
-            history = _build_history_from_legacy(legacy_data)
+    if model_version:
+        history = _get_history_by_model_version(model_version)
+    else:
+        collector = get_metrics_collector()
+        history = collector.get_metrics_history(metric_names=metric_names, last_n=last_n)
+
+        has_live_data = any(isinstance(v, list) and len(v) > 0 for v in history.values())
+        if not has_live_data:
+            legacy_data = _load_legacy_training_metrics()
+            if legacy_data:
+                history = _build_history_from_legacy(legacy_data)
+
+    if isinstance(last_n, int) and last_n > 0:
+        for key, values in list(history.items()):
+            if isinstance(values, list) and key != "iteration":
+                history[key] = values[-last_n:]
+        if isinstance(history.get("iteration"), list):
+            history["iteration"] = list(range(len(history.get("episode_reward", history["iteration"]))))
 
     needs_success_metrics = metric_names is None or any(
         key in metric_names for key in ["success_count", "success_rate"]
@@ -572,6 +952,9 @@ async def get_metrics_history(
             if key in metric_names or key == "iteration"
         }
     
+    if model_version:
+        history["model_version"] = model_version
+
     return JSONResponse(content=history)
 
 
@@ -1168,7 +1551,14 @@ async def get_best_schedule_preview(
             "table": table_rows,
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to build schedule preview: {e}")
+        logger.warning("Failed to build schedule preview from %s: %s", latest_file, e)
+        return {
+            "available": False,
+            "message": f"Schedule preview temporarily unavailable: {e}",
+            "source_file": latest_file.name,
+            "heatmap": [],
+            "table": [],
+        }
 
 
 # === Sessions Endpoints ===
@@ -1182,6 +1572,59 @@ async def list_training_sessions():
     
     if not metrics_dir.exists():
         return {"sessions": []}
+
+    model_dir = _resolve_model_dir()
+    available_model_names = {item.get("name") for item in list_model_versions(model_dir)}
+
+    def _extract_model_version(payload: Dict[str, Any], file_name: str) -> Optional[str]:
+        if not isinstance(payload, dict):
+            return None
+
+        direct_candidates = [
+            payload.get("model_version"),
+            payload.get("active_model"),
+            payload.get("model_name"),
+        ]
+
+        config = payload.get("config") if isinstance(payload.get("config"), dict) else {}
+        summary = payload.get("session_summary") if isinstance(payload.get("session_summary"), dict) else {}
+        nested_candidates = [
+            config.get("model_version"),
+            config.get("active_model"),
+            config.get("model_name"),
+            summary.get("model_version"),
+        ]
+
+        for candidate in direct_candidates + nested_candidates:
+            if isinstance(candidate, str) and candidate.strip():
+                normalized = candidate.strip()
+                normalized = normalized if normalized.endswith(".pt") else f"{normalized}.pt"
+                if normalized in available_model_names:
+                    return normalized
+
+        run_id = _extract_run_id(str(payload.get("session_id") or "")) or _extract_run_id(file_name)
+        if run_id:
+            inferred = f"actor_critic_{run_id}.pt"
+            if inferred in available_model_names:
+                return inferred
+
+        return None
+
+    def _extract_dataset_version(payload: Dict[str, Any]) -> Optional[str]:
+        if not isinstance(payload, dict):
+            return None
+        config = payload.get("config") if isinstance(payload.get("config"), dict) else {}
+        summary = payload.get("session_summary") if isinstance(payload.get("session_summary"), dict) else {}
+        for value in [
+            payload.get("dataset_version"),
+            config.get("dataset_version"),
+            config.get("dataset_name"),
+            config.get("dataset"),
+            summary.get("dataset_version"),
+        ]:
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
     
     sessions = []
     for file in metrics_dir.glob("metrics_*.json"):
@@ -1195,6 +1638,8 @@ async def list_training_sessions():
                     "status": data.get("status"),
                     "total_iterations": data.get("total_iterations"),
                     "best_reward": data.get("best_reward"),
+                    "model_version": _extract_model_version(data, file.name),
+                    "dataset_version": _extract_dataset_version(data),
                     "file": file.name,
                 })
         except Exception as e:

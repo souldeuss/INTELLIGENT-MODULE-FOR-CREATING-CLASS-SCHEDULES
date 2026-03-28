@@ -290,12 +290,16 @@ def generate_random_data(
         # 5. Генерація курсів
         logger.info("📚 Генерація курсів...")
         courses = []
-        used_subjects = set()
+        unique_subject_limit = len(COURSE_SUBJECTS)
         
         for i in range(num_courses):
-            # Унікальний предмет
-            subject = random.choice([s for s in COURSE_SUBJECTS if s not in used_subjects])
-            used_subjects.add(subject)
+            # Спочатку використовуємо унікальні предмети, потім генеруємо додаткові модулі.
+            if i < unique_subject_limit:
+                subject = COURSE_SUBJECTS[i]
+            else:
+                base_subject = random.choice(COURSE_SUBJECTS)
+                module_index = i - unique_subject_limit + 2
+                subject = f"{base_subject} (модуль {module_index})"
             
             course_type = random.choice(COURSE_TYPES)
             
