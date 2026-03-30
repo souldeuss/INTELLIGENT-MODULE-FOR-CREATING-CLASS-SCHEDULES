@@ -978,11 +978,15 @@ const TrainingMetrics: React.FC = () => {
             </Grid>
             <Grid item xs={12} sm={4} md={3}>
               <TextField
+                select
                 fullWidth
                 label="Device"
                 value={presetDevice}
                 onChange={(e) => setPresetDevice(e.target.value)}
-              />
+              >
+                <MenuItem value="cpu">CPU</MenuItem>
+                <MenuItem value="gpu">GPU (CUDA)</MenuItem>
+              </TextField>
             </Grid>
             <Grid item xs={12} md={3}>
               <Stack direction="row" spacing={1}>

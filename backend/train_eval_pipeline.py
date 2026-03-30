@@ -93,6 +93,40 @@ def _set_global_seed(seed: int) -> None:
         pass
 
 
+def _resolve_training_device(requested_device: str) -> str:
+    normalized = (requested_device or "cpu").strip().lower()
+
+    if normalized in {"", "cpu"}:
+        return "cpu"
+
+    try:
+        import torch  # type: ignore
+
+        cuda_available = torch.cuda.is_available()
+    except ImportError:
+        cuda_available = False
+
+    if normalized in {"gpu", "cuda", "cuda:0", "auto"}:
+        if cuda_available:
+            return "cuda"
+        print(
+            "[PRESET_PROGRESS] DEVICE_FALLBACK requested=gpu resolved=cpu reason=cuda_unavailable",
+            flush=True,
+        )
+        return "cpu"
+
+    if normalized.startswith("cuda"):
+        if cuda_available:
+            return normalized
+        print(
+            "[PRESET_PROGRESS] DEVICE_FALLBACK requested=cuda resolved=cpu reason=cuda_unavailable",
+            flush=True,
+        )
+        return "cpu"
+
+    raise ValueError(f"Unsupported device value: {requested_device}")
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as f:
@@ -292,6 +326,7 @@ def main() -> None:
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--promote", action="store_true", help="Activate trained model if evaluation passes")
     args = parser.parse_args()
+    args.device = _resolve_training_device(args.device)
 
     root = Path(__file__).resolve().parent.parent
     manifest_path = root / args.manifest
