@@ -66,6 +66,75 @@ SCHEDULES_DIR = Path("./saved_schedules")
 SCHEDULES_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _calculate_schedule_score(db: Session, scheduled_classes: List[ScheduledClass]) -> Dict[str, Any]:
+    """Calculate 0-100 schedule quality score and violation counters."""
+    if not scheduled_classes:
+        return {
+            "overall": 0.0,
+            "hard_violations": 0,
+            "soft_violations": 0,
+        }
+
+    total_classes = len(scheduled_classes)
+
+    timeslot_classes: Dict[int, List[ScheduledClass]] = {}
+    for scheduled_class in scheduled_classes:
+        timeslot_classes.setdefault(scheduled_class.timeslot_id, []).append(scheduled_class)
+
+    teacher_conflicts = 0
+    room_conflicts = 0
+    group_conflicts = 0
+    for classes in timeslot_classes.values():
+        if len(classes) < 2:
+            continue
+        teacher_ids = [c.teacher_id for c in classes]
+        room_ids = [c.classroom_id for c in classes]
+        group_ids = [c.group_id for c in classes]
+
+        teacher_conflicts += len(teacher_ids) - len(set(teacher_ids))
+        room_conflicts += len(room_ids) - len(set(room_ids))
+        group_conflicts += len(group_ids) - len(set(group_ids))
+
+    capacity_issues = 0
+    day_distribution = [0] * 5
+
+    for scheduled_class in scheduled_classes:
+        group = db.query(StudentGroup).filter(StudentGroup.id == scheduled_class.group_id).first()
+        classroom = db.query(Classroom).filter(Classroom.id == scheduled_class.classroom_id).first()
+        if group and classroom and group.students_count > classroom.capacity:
+            capacity_issues += 1
+
+        timeslot = db.query(Timeslot).filter(Timeslot.id == scheduled_class.timeslot_id).first()
+        if timeslot and 0 <= timeslot.day_of_week < 5:
+            day_distribution[timeslot.day_of_week] += 1
+
+    avg_per_day = total_classes / 5
+    distribution_variance = sum((day_count - avg_per_day) ** 2 for day_count in day_distribution) / 5
+    max_variance = (total_classes ** 2) / 5
+    distribution_score = (
+        100 * (1 - min(distribution_variance / max_variance, 1)) if max_variance > 0 else 100
+    )
+
+    teacher_score = max(0, 100 - (teacher_conflicts * 20))
+    room_score = max(0, 100 - (room_conflicts * 20))
+    group_score = max(0, 100 - (group_conflicts * 20))
+    gap_score = max(0, 100 - (capacity_issues * 10))
+
+    overall = (
+        teacher_score * 0.25
+        + room_score * 0.25
+        + group_score * 0.25
+        + gap_score * 0.15
+        + distribution_score * 0.10
+    )
+
+    return {
+        "overall": round(overall, 1),
+        "hard_violations": int(teacher_conflicts + room_conflicts + group_conflicts),
+        "soft_violations": int(capacity_issues),
+    }
+
+
 def _workspace_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
@@ -419,7 +488,12 @@ def check_model_compatibility(
     }
 
 
-def _auto_export_schedule(db: Session, generation_id: int, stats: dict):
+def _auto_export_schedule(
+    db: Session,
+    generation_id: int,
+    stats: dict,
+    model_version: Optional[str] = None,
+):
     """Автоматично зберегти розклад після генерації."""
     scheduled_classes = db.query(ScheduledClass).all()
     
@@ -451,14 +525,28 @@ def _auto_export_schedule(db: Session, generation_id: int, stats: dict):
             "end_time": str(timeslot.end_time) if timeslot else None,
             "is_locked": sc.is_locked,
         })
+
+    score_summary = _calculate_schedule_score(db, scheduled_classes)
+    hard_violations = (
+        stats.get("hard_violations")
+        if stats.get("hard_violations") is not None
+        else stats.get("final_hard_violations", score_summary["hard_violations"])
+    )
+    soft_violations = (
+        stats.get("soft_violations")
+        if stats.get("soft_violations") is not None
+        else stats.get("final_soft_violations", score_summary["soft_violations"])
+    )
     
     meta = {
         "created_at": datetime.now().isoformat(),
         "generation_id": generation_id,
+        "model_version": _normalize_model_name(model_version) if model_version else None,
         "classes_count": len(classes_data),
         "best_reward": stats.get("best_reward", 0),
-        "hard_violations": stats.get("final_hard_violations", 0),
-        "soft_violations": stats.get("final_soft_violations", 0),
+        "overall_score": score_summary["overall"],
+        "hard_violations": int(hard_violations),
+        "soft_violations": int(soft_violations),
         "description": f"Auto-saved after generation #{generation_id}",
     }
     
@@ -700,7 +788,7 @@ def _run_generation(
         
         # === АВТОМАТИЧНЕ ЗБЕРЕЖЕННЯ РОЗКЛАДУ У ФАЙЛ ===
         try:
-            _auto_export_schedule(db, generation_id, stats)
+            _auto_export_schedule(db, generation_id, stats, model_version=model_version)
         except Exception as e:
             logger.warning(f"⚠️ Не вдалось автоматично зберегти розклад: {e}")
         
@@ -1278,13 +1366,26 @@ def list_schedule_files():
                 meta = data.get("meta", {})
         except:
             meta = {}
+
+        if not isinstance(meta, dict):
+            meta = {}
+
+        classes_count = meta.get("classes_count", 0)
+        description = meta.get("description", "")
+        created_at = meta.get("created_at", datetime.fromtimestamp(stat.st_mtime).isoformat())
         
         files.append({
             "filename": f.name,
-            "created_at": meta.get("created_at", datetime.fromtimestamp(stat.st_mtime).isoformat()),
+            "created_at": created_at,
             "size_kb": round(stat.st_size / 1024, 2),
-            "classes_count": meta.get("classes_count", 0),
-            "description": meta.get("description", ""),
+            "classes_count": classes_count,
+            "description": description,
+            "meta": {
+                **meta,
+                "created_at": created_at,
+                "classes_count": classes_count,
+                "description": description,
+            },
         })
     
     # Сортуємо за датою (найновіші спочатку)
@@ -1328,11 +1429,16 @@ def export_schedule(description: str = "", db: Session = Depends(get_db)):
             "end_time": str(timeslot.end_time) if timeslot else None,
             "is_locked": sc.is_locked,
         })
+
+    score_summary = _calculate_schedule_score(db, scheduled_classes)
     
     # Метадані
     meta = {
         "created_at": datetime.now().isoformat(),
         "classes_count": len(classes_data),
+        "overall_score": score_summary["overall"],
+        "hard_violations": score_summary["hard_violations"],
+        "soft_violations": score_summary["soft_violations"],
         "description": description,
     }
     

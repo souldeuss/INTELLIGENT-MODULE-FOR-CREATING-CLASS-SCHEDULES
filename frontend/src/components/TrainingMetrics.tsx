@@ -17,6 +17,7 @@ import {
   TableHead,
   TableRow,
   TextField,
+  MenuItem,
   ToggleButton,
   ToggleButtonGroup,
   Typography,
@@ -33,7 +34,11 @@ import {
 } from "recharts";
 import {
   BestSchedulePreviewResponse,
+  Dataset100PresetStatusResponse,
+  ModelVersionItem,
+  TrainingCheckpointItem,
   TrainingHistoryResponse,
+  TrainingSessionItem,
   TrainingStatusResponse,
   trainingService,
 } from "../services/api";
@@ -66,17 +71,7 @@ interface DashboardPoint {
 
 const POLLING_INTERVAL_MS = 4000;
 
-interface PresetJobStatus {
-  job_id: string;
-  status: "running" | "completed" | "failed" | string;
-  return_code?: number | null;
-  created_at?: string;
-  dataset_name?: string;
-  manifest?: string;
-  iterations?: number;
-  seed?: number;
-  log_path?: string;
-}
+type PresetJobStatus = Dataset100PresetStatusResponse;
 
 const TrainingMetrics: React.FC = () => {
   const [status, setStatus] = useState<TrainingStatusResponse | null>(null);
@@ -91,10 +86,22 @@ const TrainingMetrics: React.FC = () => {
   const [presetIterations, setPresetIterations] = useState(100);
   const [presetSeed, setPresetSeed] = useState(42);
   const [presetDevice, setPresetDevice] = useState("cpu");
+  const [datasetSizeMode, setDatasetSizeMode] = useState<
+    "compatible_100" | "compatible_1000" | "custom"
+  >("compatible_100");
+  const [customDatasetSize, setCustomDatasetSize] = useState(200);
+  const [iterationsMode, setIterationsMode] = useState<"total" | "per-case">("total");
   const [presetSubmitting, setPresetSubmitting] = useState(false);
+  const [presetStopping, setPresetStopping] = useState(false);
   const [presetError, setPresetError] = useState<string | null>(null);
   const [presetInfo, setPresetInfo] = useState<string | null>(null);
   const [presetJob, setPresetJob] = useState<PresetJobStatus | null>(null);
+  const [modelVersions, setModelVersions] = useState<ModelVersionItem[]>([]);
+  const [checkpoints, setCheckpoints] = useState<TrainingCheckpointItem[]>([]);
+  const [trainingSessions, setTrainingSessions] = useState<TrainingSessionItem[]>([]);
+  const [selectedModelVersion, setSelectedModelVersion] = useState<string>("");
+  const [compareModelVersion, setCompareModelVersion] = useState<string>("");
+  const [compareHistory, setCompareHistory] = useState<TrainingHistoryResponse | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -111,10 +118,35 @@ const TrainingMetrics: React.FC = () => {
       }
 
       try {
-        const [statusRes, historyRes, previewRes] = await Promise.all([
+        const [statusRes, modelsRes, checkpointsRes, sessionsRes] = await Promise.all([
           trainingService.getStatus(),
-          trainingService.getHistory(240),
-          trainingService.getBestSchedulePreview(20),
+          trainingService.getModelVersions(),
+          trainingService.getCheckpoints(),
+          trainingService.getTrainingSessions(),
+        ]);
+
+        if (!mounted) {
+          return;
+        }
+
+        const versions = modelsRes.data?.versions || [];
+        const activeModel = modelsRes.data?.active_model || "";
+        const effectivePrimaryModel =
+          selectedModelVersion && versions.some((item) => item.name === selectedModelVersion)
+            ? selectedModelVersion
+            : activeModel || versions[0]?.name || "";
+
+        const effectiveCompareModel =
+          compareModelVersion && compareModelVersion !== effectivePrimaryModel
+            ? compareModelVersion
+            : "";
+
+        const [historyRes, compareHistoryRes, previewRes] = await Promise.all([
+          trainingService.getHistory(240, effectivePrimaryModel || undefined),
+          effectiveCompareModel
+            ? trainingService.getHistory(240, effectiveCompareModel)
+            : Promise.resolve(null),
+          trainingService.getBestSchedulePreview(20, effectivePrimaryModel || undefined),
         ]);
 
         if (!mounted) {
@@ -123,7 +155,17 @@ const TrainingMetrics: React.FC = () => {
 
         setStatus(statusRes.data);
         setHistory(historyRes.data);
+        setCompareHistory(compareHistoryRes?.data || null);
         setPreview(previewRes.data);
+        setModelVersions(versions);
+        setCheckpoints(checkpointsRes.data?.checkpoints || []);
+        setTrainingSessions(sessionsRes.data?.sessions || []);
+        if (effectivePrimaryModel !== selectedModelVersion) {
+          setSelectedModelVersion(effectivePrimaryModel);
+        }
+        if (!effectiveCompareModel && compareModelVersion) {
+          setCompareModelVersion("");
+        }
         setLegacy(null);
         setError(null);
         setLastUpdated(new Date());
@@ -138,9 +180,28 @@ const TrainingMetrics: React.FC = () => {
           setLegacy(legacyRes.data as LegacyTrainingMetrics);
           setStatus(null);
           setHistory(null);
+          setCompareHistory(null);
           setPreview(null);
           setError(null);
           setLastUpdated(new Date());
+
+          const [modelsRes, checkpointsRes, sessionsRes] = await Promise.allSettled([
+            trainingService.getModelVersions(),
+            trainingService.getCheckpoints(),
+            trainingService.getTrainingSessions(),
+          ]);
+
+          if (modelsRes.status === "fulfilled") {
+            setModelVersions(modelsRes.value.data?.versions || []);
+          }
+
+          if (checkpointsRes.status === "fulfilled") {
+            setCheckpoints(checkpointsRes.value.data?.checkpoints || []);
+          }
+
+          if (sessionsRes.status === "fulfilled") {
+            setTrainingSessions(sessionsRes.value.data?.sessions || []);
+          }
         } catch (legacyErr: any) {
           if (!mounted) {
             return;
@@ -169,25 +230,25 @@ const TrainingMetrics: React.FC = () => {
       mounted = false;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [compareModelVersion, selectedModelVersion]);
 
   useEffect(() => {
     if (!presetJob?.job_id) {
       return;
     }
 
-    if (presetJob.status === "completed" || presetJob.status === "failed") {
+    if (presetJob.status === "completed" || presetJob.status === "failed" || presetJob.status === "stopped") {
       return;
     }
 
     let mounted = true;
     const timer = window.setInterval(async () => {
       try {
-        const response = await trainingService.getDataset100PresetStatus(presetJob.job_id);
+        const response = await trainingService.getModelTrainingStatus(presetJob.job_id);
         if (!mounted) {
           return;
         }
-        setPresetJob(response.data as PresetJobStatus);
+        setPresetJob(response.data);
       } catch (err: any) {
         if (!mounted) {
           return;
@@ -208,10 +269,13 @@ const TrainingMetrics: React.FC = () => {
     setPresetInfo(null);
 
     try {
-      const response = await trainingService.startDataset100Preset({
+      const response = await trainingService.createModelTraining({
         iterations: presetIterations,
         seed: presetSeed,
         device: presetDevice,
+        dataset_size_mode: datasetSizeMode,
+        custom_case_count: datasetSizeMode === "custom" ? customDatasetSize : undefined,
+        iterations_mode: iterationsMode,
         regenerate_dataset: true,
         promote: false,
       });
@@ -219,18 +283,43 @@ const TrainingMetrics: React.FC = () => {
       const data = response.data as PresetJobStatus;
       if (data?.job_id) {
         setPresetJob(data);
-        setPresetInfo(`Preset запущено (job: ${data.job_id}).`);
+        setPresetInfo(`Навчання моделі запущено (job: ${data.job_id}).`);
       } else {
-        setPresetInfo("Preset поставлено в чергу.");
+        setPresetInfo("Тренування моделі поставлено в чергу.");
       }
     } catch (err: any) {
-      setPresetError(err?.response?.data?.detail || "Не вдалося запустити dataset-100 preset");
+      setPresetError(err?.response?.data?.detail || "Не вдалося запустити навчання моделі");
     } finally {
       setPresetSubmitting(false);
     }
   };
 
+  const handleStopPreset = async () => {
+    if (!presetJob?.job_id || presetJob.status !== "running") {
+      return;
+    }
+
+    setPresetStopping(true);
+    setPresetError(null);
+    try {
+      const response = await trainingService.stopModelTraining(presetJob.job_id);
+      setPresetJob(response.data as PresetJobStatus);
+      setPresetInfo("Тренування моделі зупинено.");
+    } catch (err: any) {
+      setPresetError(err?.response?.data?.detail || "Не вдалося зупинити тренування");
+    } finally {
+      setPresetStopping(false);
+    }
+  };
+
   const dashboardData: DashboardPoint[] = useMemo(() => {
+    const asPercent = (value: number | null | undefined): number | null => {
+      if (typeof value !== "number") {
+        return null;
+      }
+      return value <= 1 ? Number((value * 100).toFixed(2)) : Number(value.toFixed(2));
+    };
+
     if (history?.iteration?.length) {
       const softArray = history.soft_violations || [];
       const successCountArray = history.success_count || [];
@@ -251,8 +340,12 @@ const TrainingMetrics: React.FC = () => {
           policyLoss: history.policy_loss?.[idx] ?? null,
           valueLoss: history.value_loss?.[idx] ?? null,
           totalLoss: history.total_loss?.[idx] ?? null,
-          meanReward: history.average_reward?.[idx] ?? history.episode_reward?.[idx] ?? null,
-          completionRate: history.completion_rate?.[idx] ?? null,
+          meanReward:
+            history.reward_per_step?.[idx] ??
+            history.average_reward?.[idx] ??
+            history.episode_reward?.[idx] ??
+            null,
+          completionRate: asPercent(history.completion_rate?.[idx]),
           hardConflicts: history.hard_violations?.[idx] ?? null,
           softSatisfaction,
           successfulGenerations: successCountArray[idx] ?? null,
@@ -285,7 +378,7 @@ const TrainingMetrics: React.FC = () => {
         valueLoss: legacy.metrics.critic_losses[idx] ?? null,
         totalLoss: null,
         meanReward: legacy.metrics.rewards[idx] ?? null,
-        completionRate: legacy.metrics.completion_rates[idx] ?? null,
+        completionRate: asPercent(legacy.metrics.completion_rates[idx] ?? null),
         hardConflicts: hard,
         softSatisfaction,
         successfulGenerations: cumulativeSuccess,
@@ -293,6 +386,140 @@ const TrainingMetrics: React.FC = () => {
       };
     });
   }, [history, legacy]);
+
+  const compareDashboardData: DashboardPoint[] = useMemo(() => {
+    if (!compareHistory?.iteration?.length) {
+      return [];
+    }
+
+    const asPercent = (value: number | null | undefined): number | null => {
+      if (typeof value !== "number") {
+        return null;
+      }
+      return value <= 1 ? Number((value * 100).toFixed(2)) : Number(value.toFixed(2));
+    };
+
+    const softArray = compareHistory.soft_violations || [];
+    const successCountArray = compareHistory.success_count || [];
+    const successRateArray = compareHistory.success_rate || [];
+    const softValues = softArray.filter((v): v is number => typeof v === "number");
+    const maxSoft = softValues.length ? Math.max(...softValues) : 0;
+
+    return compareHistory.iteration.map((rawEpisode, idx) => {
+      const soft = softArray[idx];
+      const softSatisfaction =
+        typeof soft !== "number"
+          ? null
+          : maxSoft === 0
+          ? 100
+          : Number((100 * (1 - soft / maxSoft)).toFixed(2));
+
+      return {
+        episode: rawEpisode + 1,
+        policyLoss: compareHistory.policy_loss?.[idx] ?? null,
+        valueLoss: compareHistory.value_loss?.[idx] ?? null,
+        totalLoss: compareHistory.total_loss?.[idx] ?? null,
+        meanReward:
+          compareHistory.reward_per_step?.[idx] ??
+          compareHistory.average_reward?.[idx] ?? compareHistory.episode_reward?.[idx] ?? null,
+        completionRate: asPercent(compareHistory.completion_rate?.[idx]),
+        hardConflicts: compareHistory.hard_violations?.[idx] ?? null,
+        softSatisfaction,
+        successfulGenerations: successCountArray[idx] ?? null,
+        successRate: successRateArray[idx] ?? null,
+      };
+    });
+  }, [compareHistory]);
+
+  const rewardComparisonData = useMemo(() => {
+    const maxLen = Math.max(dashboardData.length, compareDashboardData.length);
+    if (maxLen === 0) {
+      return [];
+    }
+
+    const rows: Array<{ episode: number; primaryReward: number | null; compareReward: number | null }> = [];
+    for (let idx = 0; idx < maxLen; idx += 1) {
+      rows.push({
+        episode: idx + 1,
+        primaryReward: dashboardData[idx]?.meanReward ?? null,
+        compareReward: compareDashboardData[idx]?.meanReward ?? null,
+      });
+    }
+    return rows;
+  }, [compareDashboardData, dashboardData]);
+
+  const completionComparisonData = useMemo(() => {
+    const maxLen = Math.max(dashboardData.length, compareDashboardData.length);
+    if (maxLen === 0) {
+      return [];
+    }
+    const rows: Array<{ episode: number; primaryCompletion: number | null; compareCompletion: number | null }> = [];
+    for (let idx = 0; idx < maxLen; idx += 1) {
+      rows.push({
+        episode: idx + 1,
+        primaryCompletion: dashboardData[idx]?.completionRate ?? null,
+        compareCompletion: compareDashboardData[idx]?.completionRate ?? null,
+      });
+    }
+    return rows;
+  }, [compareDashboardData, dashboardData]);
+
+  const hardConflictsComparisonData = useMemo(() => {
+    const maxLen = Math.max(dashboardData.length, compareDashboardData.length);
+    if (maxLen === 0) {
+      return [];
+    }
+    const rows: Array<{ episode: number; primaryHardConflicts: number | null; compareHardConflicts: number | null }> = [];
+    for (let idx = 0; idx < maxLen; idx += 1) {
+      rows.push({
+        episode: idx + 1,
+        primaryHardConflicts: dashboardData[idx]?.hardConflicts ?? null,
+        compareHardConflicts: compareDashboardData[idx]?.hardConflicts ?? null,
+      });
+    }
+    return rows;
+  }, [compareDashboardData, dashboardData]);
+
+  const policyLossChartData = useMemo(() => {
+    return dashboardData.map((point) => ({
+      episode: point.episode,
+      policyLoss: point.policyLoss,
+    }));
+  }, [dashboardData]);
+
+  const valueLossPercentChartData = useMemo(() => {
+    const firstValueLoss = dashboardData.find(
+      (point) => typeof point.valueLoss === "number" && Math.abs(point.valueLoss) > 1e-9
+    )?.valueLoss;
+
+    const firstTotalLoss = dashboardData.find(
+      (point) => typeof point.totalLoss === "number" && Math.abs(point.totalLoss) > 1e-9
+    )?.totalLoss;
+
+    return dashboardData.map((point) => {
+      const rawValueLossPercent =
+        typeof point.valueLoss === "number" && typeof firstValueLoss === "number"
+          ? (point.valueLoss / firstValueLoss) * 100
+          : null;
+
+      const rawTotalLossPercent =
+        typeof point.totalLoss === "number" && typeof firstTotalLoss === "number"
+          ? (point.totalLoss / firstTotalLoss) * 100
+          : null;
+
+      const valueLossPercent =
+        typeof rawValueLossPercent === "number" ? 100 - rawValueLossPercent : null;
+
+      const totalLossPercent =
+        typeof rawTotalLossPercent === "number" ? 100 - rawTotalLossPercent : null;
+
+      return {
+        episode: point.episode,
+        valueLossPercent,
+        totalLossPercent,
+      };
+    });
+  }, [dashboardData]);
 
   const normalizedHyperparameters = useMemo(() => {
     const hp = status?.hyperparameters;
@@ -320,22 +547,89 @@ const TrainingMetrics: React.FC = () => {
     return value.toFixed(digits);
   };
 
+  const invertForDisplay = (value: number | null | undefined): number | null => {
+    if (typeof value !== "number" || Number.isNaN(value)) {
+      return null;
+    }
+
+    const inverted = -value;
+    return Math.abs(inverted) < 1e-9 ? 0 : inverted;
+  };
+
+  const formatDateTime = (value: string | number | null | undefined): string => {
+    if (value === null || value === undefined || value === "") {
+      return "-";
+    }
+
+    if (typeof value === "number") {
+      const timestamp = value < 1_000_000_000_000 ? value * 1000 : value;
+      const date = new Date(timestamp);
+      return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString("uk-UA");
+    }
+
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? value : date.toLocaleString("uk-UA");
+  };
+
   const kpis = useMemo(() => {
     const lastPoint = dashboardData[dashboardData.length - 1];
+    const normalizedRewards = (history?.reward_per_step || []).filter(
+      (value): value is number => typeof value === "number"
+    );
+    const meanNormalizedReward =
+      normalizedRewards.length > 0
+        ? normalizedRewards.reduce((sum, reward) => sum + reward, 0) / normalizedRewards.length
+        : null;
+    const currentNormalizedReward =
+      normalizedRewards.length > 0 ? normalizedRewards[normalizedRewards.length - 1] : null;
+    const bestNormalizedReward =
+      normalizedRewards.length > 0 ? Math.max(...normalizedRewards) : null;
+
+    const episodeRewards = (history?.episode_reward || []).filter(
+      (value): value is number => typeof value === "number"
+    );
+    const meanEpisodeReward =
+      episodeRewards.length > 0
+        ? episodeRewards.reduce((sum, reward) => sum + reward, 0) / episodeRewards.length
+        : null;
+    const currentEpisodeReward =
+      episodeRewards.length > 0 ? episodeRewards[episodeRewards.length - 1] : null;
+    const bestEpisodeReward = episodeRewards.length > 0 ? Math.max(...episodeRewards) : null;
+    const bestHistoryReward = dashboardData.reduce<number | null>((best, point) => {
+      if (typeof point.meanReward !== "number") {
+        return best;
+      }
+      if (best === null) {
+        return point.meanReward;
+      }
+      return Math.max(best, point.meanReward);
+    }, null);
 
     return {
       currentEpisode:
-        status?.progress?.current_iteration ?? legacy?.iterations ?? lastPoint?.episode ?? 0,
-      totalEpisodes: status?.progress?.total_iterations ?? legacy?.iterations ?? 0,
-      meanReward: status?.metrics?.current_reward ?? lastPoint?.meanReward ?? 0,
-      bestReward: status?.metrics?.best_reward ?? 0,
-      hardConflicts: status?.metrics?.hard_violations ?? lastPoint?.hardConflicts ?? 0,
+        lastPoint?.episode ?? status?.progress?.current_iteration ?? legacy?.iterations ?? 0,
+      totalEpisodes: lastPoint?.episode ?? status?.progress?.total_iterations ?? legacy?.iterations ?? 0,
+      meanReward:
+        meanNormalizedReward ??
+        currentNormalizedReward ??
+        meanEpisodeReward ??
+        currentEpisodeReward ??
+        lastPoint?.meanReward ??
+        status?.metrics?.current_reward ??
+        0,
+      bestReward:
+        bestNormalizedReward ??
+        bestEpisodeReward ??
+        bestHistoryReward ??
+        status?.metrics?.best_reward ??
+        0,
+      hardConflicts: lastPoint?.hardConflicts ?? status?.metrics?.hard_violations ?? 0,
       successfulGenerations:
-        status?.metrics?.successful_generations ?? lastPoint?.successfulGenerations ?? 0,
-      successRate: status?.metrics?.success_rate ?? lastPoint?.successRate ?? 0,
+        lastPoint?.successfulGenerations ?? status?.metrics?.successful_generations ?? 0,
+      successRate: lastPoint?.successRate ?? status?.metrics?.success_rate ?? 0,
       softSatisfaction: lastPoint?.softSatisfaction ?? 0,
     };
-  }, [dashboardData, legacy, status]);
+  }, [dashboardData, history, legacy, status]);
 
   const heatmapMax = useMemo(() => {
     if (!preview?.heatmap?.length) {
@@ -343,6 +637,10 @@ const TrainingMetrics: React.FC = () => {
     }
     return Math.max(...preview.heatmap.map((cell) => cell.count), 1);
   }, [preview]);
+
+  const hasPrimaryHistory = useMemo(() => {
+    return Boolean(history?.iteration?.length);
+  }, [history]);
 
   if (loading) {
     return (
@@ -360,7 +658,7 @@ const TrainingMetrics: React.FC = () => {
     );
   }
 
-  if (!dashboardData.length && !preview?.available) {
+  if (!dashboardData.length && !preview?.available && modelVersions.length === 0) {
     return (
       <Box p={3}>
         <Alert severity="info">Немає доступних даних тренування</Alert>
@@ -394,6 +692,55 @@ const TrainingMetrics: React.FC = () => {
         </Stack>
       </Stack>
 
+      <Paper elevation={0} sx={{ p: 2, mb: 3, border: "1px solid", borderColor: "divider" }}>
+        <Stack direction={{ xs: "column", md: "row" }} spacing={2} alignItems={{ xs: "stretch", md: "center" }}>
+          <TextField
+            select
+            label="Статистика моделі"
+            value={selectedModelVersion}
+            onChange={(e) => setSelectedModelVersion(e.target.value)}
+            size="small"
+            sx={{ minWidth: 320 }}
+          >
+            {modelVersions.map((model) => (
+              <MenuItem key={model.name} value={model.name}>
+                {model.name} {model.is_active ? "(active)" : ""}
+              </MenuItem>
+            ))}
+          </TextField>
+
+          <TextField
+            select
+            label="Порівняти з"
+            value={compareModelVersion}
+            onChange={(e) => setCompareModelVersion(e.target.value)}
+            size="small"
+            sx={{ minWidth: 320 }}
+          >
+            <MenuItem value="">Без порівняння</MenuItem>
+            {modelVersions
+              .filter((model) => model.name !== selectedModelVersion)
+              .map((model) => (
+                <MenuItem key={model.name} value={model.name}>
+                  {model.name} {model.is_active ? "(active)" : ""}
+                </MenuItem>
+              ))}
+          </TextField>
+        </Stack>
+
+        {compareModelVersion && (
+          <Alert severity="info" sx={{ mt: 2 }}>
+            Порівняння активне: {selectedModelVersion} vs {compareModelVersion}
+          </Alert>
+        )}
+
+        {!hasPrimaryHistory && selectedModelVersion && (
+          <Alert severity="info" sx={{ mt: 2 }}>
+            Для моделі {selectedModelVersion} відсутня збережена історія метрик.
+          </Alert>
+        )}
+      </Paper>
+
       {status?.progress && (
         <Paper elevation={0} sx={{ p: 2, mb: 3, border: "1px solid", borderColor: "divider" }}>
           <Stack spacing={1}>
@@ -426,16 +773,19 @@ const TrainingMetrics: React.FC = () => {
           </Grid>
           <Grid item xs={12} sm={6} md={3}>
             <Typography variant="body2" color="text.secondary">
-              Mean Reward
+              Mean Normalized Reward/Step
             </Typography>
-            <Typography variant="h6">{Number(kpis.meanReward || 0).toFixed(2)}</Typography>
+            <Typography variant="h6">{formatNumber(invertForDisplay(kpis.meanReward), 2)}</Typography>
+            <Typography variant="caption" color="text.secondary">
+              Нормалізовано на кількість кроків епізоду (зі зміненим знаком)
+            </Typography>
           </Grid>
           <Grid item xs={12} sm={6} md={3}>
             <Typography variant="body2" color="text.secondary">
-              Best Reward
+              Best Normalized Reward/Step
             </Typography>
             <Typography variant="h6" color="success.main">
-              {Number(kpis.bestReward || 0).toFixed(2)}
+              {formatNumber(invertForDisplay(kpis.bestReward), 2)}
             </Typography>
           </Grid>
           <Grid item xs={12} sm={6} md={3}>
@@ -556,7 +906,7 @@ const TrainingMetrics: React.FC = () => {
             spacing={2}
             mb={2}
           >
-            <Typography variant="h6">Dataset-100 Preset</Typography>
+            <Typography variant="h6">Створення та навчання моделі</Typography>
             {presetJob?.status && (
               <Chip
                 size="small"
@@ -579,6 +929,46 @@ const TrainingMetrics: React.FC = () => {
             </Grid>
             <Grid item xs={12} sm={4} md={3}>
               <TextField
+                select
+                fullWidth
+                label="Розмір датасету"
+                value={datasetSizeMode}
+                onChange={(e) =>
+                  setDatasetSizeMode(
+                    e.target.value as "compatible_100" | "compatible_1000" | "custom"
+                  )
+                }
+              >
+                <MenuItem value="compatible_100">Compatible 100 кейсів</MenuItem>
+                <MenuItem value="compatible_1000">Compatible 1000 кейсів</MenuItem>
+                <MenuItem value="custom">Custom N</MenuItem>
+              </TextField>
+            </Grid>
+            <Grid item xs={12} sm={4} md={3}>
+              <TextField
+                fullWidth
+                label="Custom N"
+                type="number"
+                inputProps={{ min: 2, max: 10000 }}
+                value={customDatasetSize}
+                onChange={(e) => setCustomDatasetSize(Number(e.target.value) || 200)}
+                disabled={datasetSizeMode !== "custom"}
+              />
+            </Grid>
+            <Grid item xs={12} sm={4} md={3}>
+              <TextField
+                select
+                fullWidth
+                label="Iterations Mode"
+                value={iterationsMode}
+                onChange={(e) => setIterationsMode(e.target.value as "total" | "per-case")}
+              >
+                <MenuItem value="total">total</MenuItem>
+                <MenuItem value="per-case">per-case</MenuItem>
+              </TextField>
+            </Grid>
+            <Grid item xs={12} sm={4} md={3}>
+              <TextField
                 fullWidth
                 label="Seed"
                 type="number"
@@ -595,14 +985,25 @@ const TrainingMetrics: React.FC = () => {
               />
             </Grid>
             <Grid item xs={12} md={3}>
-              <Button
-                fullWidth
-                variant="contained"
-                onClick={handleStartPreset}
-                disabled={presetSubmitting}
-              >
-                {presetSubmitting ? "Starting..." : "Start Dataset-100"}
-              </Button>
+              <Stack direction="row" spacing={1}>
+                <Button
+                  fullWidth
+                  variant="contained"
+                  onClick={handleStartPreset}
+                  disabled={presetSubmitting || presetJob?.status === "running"}
+                >
+                  {presetSubmitting ? "Starting..." : "Create & Train Model"}
+                </Button>
+                <Button
+                  fullWidth
+                  variant="outlined"
+                  color="error"
+                  onClick={handleStopPreset}
+                  disabled={presetStopping || presetJob?.status !== "running"}
+                >
+                  {presetStopping ? "Stopping..." : "Stop Training"}
+                </Button>
+              </Stack>
             </Grid>
           </Grid>
 
@@ -620,8 +1021,41 @@ const TrainingMetrics: React.FC = () => {
           {presetJob && (
             <Box mt={2}>
               <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-                Last preset run
+                Останній запуск тренування
               </Typography>
+              {(typeof presetJob.progress_percent === "number" ||
+                typeof presetJob.cases_total === "number") && (
+                <Box sx={{ mb: 2 }}>
+                  <Stack spacing={0.75}>
+                    <Stack direction="row" justifyContent="space-between" alignItems="center">
+                      <Typography variant="body2" color="text.secondary">
+                        Прогрес навчання датасету
+                      </Typography>
+                      <Typography variant="body2" fontWeight={700}>
+                        {typeof presetJob.progress_percent === "number"
+                          ? `${presetJob.progress_percent.toFixed(1)}%`
+                          : "-"}
+                      </Typography>
+                    </Stack>
+                    <LinearProgress
+                      variant="determinate"
+                      value={Math.max(0, Math.min(100, presetJob.progress_percent ?? 0))}
+                    />
+                    <Typography variant="caption" color="text.secondary">
+                      {typeof presetJob.cases_done === "number" && typeof presetJob.cases_total === "number"
+                        ? `Оброблено кейсів: ${presetJob.cases_done}/${presetJob.cases_total}`
+                        : "Очікуємо деталізацію прогресу..."}
+                      {typeof presetJob.current_case === "number"
+                        ? ` • Поточний кейс: ${presetJob.current_case}`
+                        : ""}
+                      {typeof presetJob.remaining_cases === "number"
+                        ? ` • Залишилось: ${presetJob.remaining_cases}`
+                        : ""}
+                    </Typography>
+                  </Stack>
+                </Box>
+              )}
+
               <Grid container spacing={1}>
                 <Grid item xs={12} md={4}>
                   <Typography variant="body2">Job ID: {presetJob.job_id}</Typography>
@@ -630,7 +1064,21 @@ const TrainingMetrics: React.FC = () => {
                   <Typography variant="body2">Dataset: {presetJob.dataset_name || "-"}</Typography>
                 </Grid>
                 <Grid item xs={12} md={4}>
+                  <Typography variant="body2">Dataset size: {presetJob.dataset_size ?? "-"}</Typography>
+                </Grid>
+                <Grid item xs={12} md={4}>
                   <Typography variant="body2">Iterations: {presetJob.iterations ?? "-"}</Typography>
+                </Grid>
+                <Grid item xs={12} md={6}>
+                  <Typography variant="body2">
+                    Effective Iterations: {presetJob.effective_iterations ?? "-"}
+                  </Typography>
+                </Grid>
+                <Grid item xs={12} md={6}>
+                  <Typography variant="body2">Iterations Mode: {presetJob.iterations_mode || "-"}</Typography>
+                </Grid>
+                <Grid item xs={12} md={6}>
+                  <Typography variant="body2">Model version: {presetJob.model_version || "-"}</Typography>
                 </Grid>
                 <Grid item xs={12} md={6}>
                   <Typography variant="body2" sx={{ wordBreak: "break-all" }}>
@@ -648,25 +1096,168 @@ const TrainingMetrics: React.FC = () => {
         </CardContent>
       </Card>
 
+      <Card sx={{ mb: 3 }}>
+        <CardContent>
+          <Typography variant="h6" gutterBottom>
+            Історія моделей і навчання
+          </Typography>
+
+          <Grid container spacing={2}>
+            <Grid item xs={12} lg={4}>
+              <Typography variant="subtitle2" gutterBottom>
+                Model Versions ({modelVersions.length})
+              </Typography>
+              <Box sx={{ overflowX: "auto" }}>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Model</TableCell>
+                      <TableCell>Active</TableCell>
+                      <TableCell>Updated</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {modelVersions.slice(0, 8).map((model) => (
+                      <TableRow key={model.name}>
+                        <TableCell>{model.name}</TableCell>
+                        <TableCell>{model.is_active ? "Yes" : "No"}</TableCell>
+                        <TableCell>{formatDateTime(model.updated_at)}</TableCell>
+                      </TableRow>
+                    ))}
+                    {modelVersions.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={3}>Немає збережених версій</TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </Box>
+            </Grid>
+
+            <Grid item xs={12} lg={4}>
+              <Typography variant="subtitle2" gutterBottom>
+                Checkpoints ({checkpoints.length})
+              </Typography>
+              <Box sx={{ overflowX: "auto" }}>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>ID</TableCell>
+                      <TableCell>Iter</TableCell>
+                      <TableCell>Best Reward</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {checkpoints.slice(0, 8).map((checkpoint) => (
+                      <TableRow key={checkpoint.checkpoint_id}>
+                        <TableCell>{checkpoint.checkpoint_id}</TableCell>
+                        <TableCell>{checkpoint.iteration}</TableCell>
+                        <TableCell>{Number(checkpoint.best_reward || 0).toFixed(2)}</TableCell>
+                      </TableRow>
+                    ))}
+                    {checkpoints.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={3}>Немає checkpoint-ів</TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </Box>
+            </Grid>
+
+            <Grid item xs={12} lg={4}>
+              <Typography variant="subtitle2" gutterBottom>
+                Training Sessions ({trainingSessions.length})
+              </Typography>
+              <Box sx={{ overflowX: "auto" }}>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Session</TableCell>
+                      <TableCell>Status</TableCell>
+                      <TableCell>Model</TableCell>
+                      <TableCell>Dataset</TableCell>
+                      <TableCell>Start</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {trainingSessions.slice(0, 8).map((session) => (
+                      <TableRow key={session.session_id || session.file}>
+                        <TableCell>{session.session_id || session.file}</TableCell>
+                        <TableCell>{session.status || "-"}</TableCell>
+                        <TableCell>{session.model_version || "-"}</TableCell>
+                        <TableCell>{session.dataset_version || "-"}</TableCell>
+                        <TableCell>{formatDateTime(session.start_time)}</TableCell>
+                      </TableRow>
+                    ))}
+                    {trainingSessions.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={5}>Немає сесій навчання</TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </Box>
+            </Grid>
+          </Grid>
+        </CardContent>
+      </Card>
+
       <Grid container spacing={3}>
         <Grid item xs={12} lg={6}>
           <Card>
             <CardContent>
               <Typography variant="h6" gutterBottom>
-                Loss Curve
+                Policy Loss Curve
               </Typography>
               <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={dashboardData}>
+                <LineChart data={policyLossChartData}>
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey="episode" />
                   <YAxis />
                   <Tooltip />
                   <Legend />
                   <Line type="monotone" dataKey="policyLoss" name="Policy Loss" stroke="#0d47a1" strokeWidth={2} dot={false} />
-                  <Line type="monotone" dataKey="valueLoss" name="Value Loss" stroke="#1976d2" strokeWidth={2} dot={false} />
-                  <Line type="monotone" dataKey="totalLoss" name="Total Loss" stroke="#42a5f5" strokeWidth={2} dot={false} />
                 </LineChart>
               </ResponsiveContainer>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        <Grid item xs={12} lg={6}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>
+                Value Loss (Relative %)
+              </Typography>
+              <ResponsiveContainer width="100%" height={300}>
+                <LineChart data={valueLossPercentChartData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="episode" />
+                  <YAxis unit="%" />
+                  <Tooltip formatter={(value: number | string) => `${Number(value).toFixed(2)}%`} />
+                  <Legend />
+                  <Line
+                    type="monotone"
+                    dataKey="valueLossPercent"
+                    name="Value Loss (%)"
+                    stroke="#1976d2"
+                    strokeWidth={2}
+                    dot={false}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="totalLossPercent"
+                    name="Total Loss (%)"
+                    stroke="#42a5f5"
+                    strokeWidth={2}
+                    dot={false}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+              <Typography variant="caption" color="text.secondary">
+                100% = значення на першому доступному епізоді (для зручного порівняння динаміки).
+              </Typography>
             </CardContent>
           </Card>
         </Grid>
@@ -678,13 +1269,30 @@ const TrainingMetrics: React.FC = () => {
                 Mean Reward per Episode
               </Typography>
               <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={dashboardData}>
+                <LineChart data={rewardComparisonData}>
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey="episode" />
                   <YAxis />
                   <Tooltip />
                   <Legend />
-                  <Line type="monotone" dataKey="meanReward" name="Mean Reward" stroke="#1565c0" strokeWidth={2.5} dot={false} />
+                  <Line
+                    type="monotone"
+                    dataKey="primaryReward"
+                    name={`Mean Reward • ${selectedModelVersion || "selected"}`}
+                    stroke="#1565c0"
+                    strokeWidth={2.5}
+                    dot={false}
+                  />
+                  {compareModelVersion && (
+                    <Line
+                      type="monotone"
+                      dataKey="compareReward"
+                      name={`Mean Reward • ${compareModelVersion}`}
+                      stroke="#ef6c00"
+                      strokeWidth={2.5}
+                      dot={false}
+                    />
+                  )}
                 </LineChart>
               </ResponsiveContainer>
             </CardContent>
@@ -698,7 +1306,7 @@ const TrainingMetrics: React.FC = () => {
                 Completion Rate over Time
               </Typography>
               <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={dashboardData}>
+                <LineChart data={completionComparisonData}>
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey="episode" />
                   <YAxis domain={[0, 100]} />
@@ -706,12 +1314,22 @@ const TrainingMetrics: React.FC = () => {
                   <Legend />
                   <Line
                     type="monotone"
-                    dataKey="completionRate"
-                    name="Completion Rate (%)"
+                    dataKey="primaryCompletion"
+                    name={`Completion • ${selectedModelVersion || "selected"}`}
                     stroke="#64b5f6"
                     strokeWidth={2}
                     dot={false}
                   />
+                  {compareModelVersion && (
+                    <Line
+                      type="monotone"
+                      dataKey="compareCompletion"
+                      name={`Completion • ${compareModelVersion}`}
+                      stroke="#ef6c00"
+                      strokeWidth={2}
+                      dot={false}
+                    />
+                  )}
                 </LineChart>
               </ResponsiveContainer>
               {!dashboardData.some((point) => typeof point.completionRate === "number") && (
@@ -730,13 +1348,30 @@ const TrainingMetrics: React.FC = () => {
                 Hard Conflicts over Time
               </Typography>
               <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={dashboardData}>
+                <LineChart data={hardConflictsComparisonData}>
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey="episode" />
                   <YAxis allowDecimals={false} />
                   <Tooltip />
                   <Legend />
-                  <Line type="monotone" dataKey="hardConflicts" name="Hard Conflicts" stroke="#ef5350" strokeWidth={2} dot={false} />
+                  <Line
+                    type="monotone"
+                    dataKey="primaryHardConflicts"
+                    name={`Hard Conflicts • ${selectedModelVersion || "selected"}`}
+                    stroke="#ef5350"
+                    strokeWidth={2}
+                    dot={false}
+                  />
+                  {compareModelVersion && (
+                    <Line
+                      type="monotone"
+                      dataKey="compareHardConflicts"
+                      name={`Hard Conflicts • ${compareModelVersion}`}
+                      stroke="#8d6e63"
+                      strokeWidth={2}
+                      dot={false}
+                    />
+                  )}
                 </LineChart>
               </ResponsiveContainer>
             </CardContent>
@@ -841,6 +1476,12 @@ const TrainingMetrics: React.FC = () => {
               <Typography variant="h6" gutterBottom>
                 Візуалізація найкращого розкладу
               </Typography>
+
+              {preview?.message && (
+                <Alert severity="info" sx={{ mb: 2 }}>
+                  {preview.message}
+                </Alert>
+              )}
 
               {previewMode === "heatmap" ? (
                 <Box>

@@ -36,6 +36,15 @@ echo ✅ Node.js:
 node --version
 echo.
 
+:: Визначення LAN IP для підказок доступу з іншого ПК
+set "LAN_IP="
+for /f "tokens=2 delims=:" %%i in ('ipconfig ^| findstr /R /C:"IPv4 Address" /C:"IPv4-адреса"') do (
+    for /f "tokens=* delims= " %%j in ("%%i") do (
+        if not defined LAN_IP set "LAN_IP=%%j"
+    )
+)
+if not defined LAN_IP set "LAN_IP=127.0.0.1"
+
 :: Перевірка залежностей Backend
 echo 📦 Перевірка Backend залежностей...
 cd backend
@@ -95,7 +104,7 @@ echo.
 
 :: Запуск Backend у новому вікні
 echo 🚀 Запуск Backend Server...
-start "Backend Server - Port 8000" cmd /k "cd /d "%CD%\backend" && python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000"
+start "Backend Server - Port 8000" cmd /k "cd /d "%CD%\backend" && python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000"
 
 :: Пауза щоб backend встиг запуститись
 echo ⏳ Чекаю 5 секунд поки Backend запуститься...
@@ -103,7 +112,7 @@ timeout /t 5 /nobreak > nul
 
 :: Запуск Frontend у новому вікні
 echo 🌐 Запуск Web UI...
-start "Web UI - Port 3000" cmd /k "cd /d "%CD%\frontend" && npm start"
+start "Web UI - Port 3000" cmd /k "cd /d "%CD%\frontend" && set "HOST=0.0.0.0" && npm start"
 
 echo.
 echo ═══════════════════════════════════════════════════════════════
@@ -115,6 +124,11 @@ echo.
 echo   🌐 Web UI:          http://localhost:3000
 echo   🔧 Backend API:     http://localhost:8000
 echo   📚 API Docs:        http://localhost:8000/docs
+echo.
+echo   📡 Доступ з іншого ПК у LAN:
+echo   🌐 Web UI:          http://%LAN_IP%:3000
+echo   🔧 Backend API:     http://%LAN_IP%:8000
+echo   📚 API Docs:        http://%LAN_IP%:8000/docs
 echo.
 echo   ℹ️  Відкрилися два нових вікна терміналу:
 echo      - Backend Server (не закривайте!)

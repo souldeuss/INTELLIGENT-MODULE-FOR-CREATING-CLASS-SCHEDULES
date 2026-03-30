@@ -82,6 +82,11 @@ class ActorCritic(nn.Module):
 
     def __init__(self, state_dim: int, action_dim: int, hidden_dim: int = 256):
         super().__init__()
+        # Зберігаємо вихідний стан_дім для нормалізації
+        self.expected_state_dim = 2337  # Розмір під час тренування
+        self.actual_state_dim = state_dim
+        
+        # Якщо состояние з іншою розмірністю - це OK, буде нормалізовано
         self.actor = ActorNetwork(state_dim, action_dim, hidden_dim)
         self.critic = CriticNetwork(state_dim, hidden_dim)
 

@@ -37,7 +37,6 @@ import { useNavigate, useLocation } from "react-router-dom";
 // New Modern Components
 import ModernDashboard from "./components/ModernDashboard";
 import InteractiveTimetable from "./components/InteractiveTimetable";
-import AIControlPanel from "./components/AIControlPanel";
 import ConflictCenter from "./components/ConflictCenter";
 // Existing Components
 import CourseManagement from "./components/CourseManagement";
@@ -169,13 +168,7 @@ const menuSections = [
     title: "Сценарії",
     items: [
       {
-        text: "Індивідуальна генерація",
-        icon: <PsychologyIcon />,
-        path: "/individual-generation",
-        badge: "NEW",
-      },
-      {
-        text: "Навчання моделі",
+        text: "Створення і навчання моделі",
         icon: <PsychologyIcon />,
         path: "/training-metrics",
         badge: "LIVE",
@@ -418,8 +411,8 @@ function AppContent() {
         <Routes>
           <Route path="/" element={<ModernDashboard />} />
           <Route path="/timetable" element={<InteractiveTimetable />} />
-          <Route path="/individual-generation" element={<AIControlPanel />} />
-          <Route path="/ai-generator" element={<AIControlPanel />} />
+          <Route path="/individual-generation" element={<TrainingMetrics />} />
+          <Route path="/ai-generator" element={<TrainingMetrics />} />
           <Route path="/conflicts" element={<ConflictCenter />} />
           <Route path="/courses" element={<CourseManagement />} />
           <Route path="/teachers" element={<TeacherManagement />} />

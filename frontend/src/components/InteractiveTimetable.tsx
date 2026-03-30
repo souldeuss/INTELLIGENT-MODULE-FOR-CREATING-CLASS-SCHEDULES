@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   Box,
   Paper,
@@ -26,6 +26,7 @@ import {
   CardContent,
   Divider,
   Badge,
+  LinearProgress,
 } from "@mui/material";
 import {
   ViewWeek as WeekIcon,
@@ -57,10 +58,18 @@ import {
   getGroupTimetable,
   getTeacherTimetable,
   getClassroomTimetable,
+  generateSchedule,
+  checkModelCompatibility,
+  getGenerationStatus,
+  stopGeneration,
   lockScheduledClass,
   deleteScheduledClass,
   updateScheduledClass,
   historyService,
+  ModelVersionItem,
+  trainingService,
+  aiService,
+  ScheduleScoreResponse,
 } from "../services/api";
 
 interface ScheduledClass {
@@ -136,6 +145,23 @@ const InteractiveTimetable: React.FC = () => {
   // History state
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
+  const generationPollRef = useRef<number | null>(null);
+  const adaptationPollRef = useRef<number | null>(null);
+  const [availableModels, setAvailableModels] = useState<ModelVersionItem[]>([]);
+  const [selectedModelVersion, setSelectedModelVersion] = useState<string>("");
+  const [generationId, setGenerationId] = useState<number | null>(null);
+  const [generationStatus, setGenerationStatus] = useState<
+    "idle" | "running" | "completed" | "failed" | "stopped"
+  >("idle");
+  const [generationProgress, setGenerationProgress] = useState(0);
+  const [adaptationJobId, setAdaptationJobId] = useState<string | null>(null);
+  const [adaptationStatus, setAdaptationStatus] = useState<
+    "idle" | "running" | "completed" | "failed" | "stopped"
+  >("idle");
+  const [adaptationProgress, setAdaptationProgress] = useState(0);
+  const [scheduleScore, setScheduleScore] = useState<ScheduleScoreResponse | null>(null);
+  const [scoreLoading, setScoreLoading] = useState(false);
+  const [scoreError, setScoreError] = useState<string | null>(null);
 
   // Notifications
   const [snackbar, setSnackbar] = useState<{
@@ -151,6 +177,7 @@ const InteractiveTimetable: React.FC = () => {
   // Load initial data
   useEffect(() => {
     loadData();
+    loadModels();
   }, []);
 
   useEffect(() => {
@@ -184,6 +211,40 @@ const InteractiveTimetable: React.FC = () => {
     }
   };
 
+  const loadModels = async () => {
+    try {
+      const response = await trainingService.getModelVersions();
+      const models = response.data?.versions || [];
+      const active = response.data?.active_model || "";
+      setAvailableModels(models);
+      setSelectedModelVersion((prev) => {
+        if (prev && models.some((m) => m.name === prev)) {
+          return prev;
+        }
+        if (active && models.some((m) => m.name === active)) {
+          return active;
+        }
+        return models[0]?.name || "";
+      });
+    } catch (error) {
+      console.error("Failed to load model versions:", error);
+    }
+  };
+
+  const loadScheduleScore = useCallback(async () => {
+    setScoreLoading(true);
+    try {
+      const response = await aiService.getScheduleScore();
+      setScheduleScore(response.data);
+      setScoreError(null);
+    } catch (error) {
+      console.error("Failed to load schedule score:", error);
+      setScoreError("Не вдалося оновити оцінку розкладу");
+    } finally {
+      setScoreLoading(false);
+    }
+  }, []);
+
   const loadSchedule = async () => {
     try {
       let response;
@@ -199,9 +260,11 @@ const InteractiveTimetable: React.FC = () => {
           break;
       }
       setSchedule(response?.data || []);
+      await loadScheduleScore();
     } catch (error) {
       console.error("Failed to load schedule:", error);
       setSchedule([]);
+      await loadScheduleScore();
     }
   };
 
@@ -217,6 +280,230 @@ const InteractiveTimetable: React.FC = () => {
       // Ignore if history API not available
     }
   };
+
+  const stopGenerationPolling = useCallback(() => {
+    if (generationPollRef.current !== null) {
+      window.clearInterval(generationPollRef.current);
+      generationPollRef.current = null;
+    }
+  }, []);
+
+  const stopAdaptationPolling = useCallback(() => {
+    if (adaptationPollRef.current !== null) {
+      window.clearInterval(adaptationPollRef.current);
+      adaptationPollRef.current = null;
+    }
+  }, []);
+
+  const syncAdaptation = useCallback(
+    async (jobId: string) => {
+      try {
+        const response = await trainingService.getModelAdaptationStatus(jobId);
+        const data: any = response.data;
+
+        if (typeof data.progress_percent === "number") {
+          setAdaptationProgress(Math.max(0, Math.min(100, data.progress_percent)));
+        }
+
+        if (data.status === "completed") {
+          setAdaptationStatus("completed");
+          setAdaptationJobId(null);
+          stopAdaptationPolling();
+
+          const adaptedModelVersion =
+            typeof data.model_version === "string" ? data.model_version : "";
+          await loadModels();
+
+          if (adaptedModelVersion) {
+            setSelectedModelVersion(adaptedModelVersion);
+            showNotification(
+              `Адаптацію завершено. Обрано модель ${adaptedModelVersion}`,
+              "success"
+            );
+          } else {
+            showNotification("Адаптацію моделі завершено", "success");
+          }
+          return;
+        }
+
+        if (data.status === "failed") {
+          setAdaptationStatus("failed");
+          setAdaptationJobId(null);
+          stopAdaptationPolling();
+          showNotification("Адаптація моделі завершилась з помилкою", "error");
+          return;
+        }
+
+        if (data.status === "stopped") {
+          setAdaptationStatus("stopped");
+          setAdaptationJobId(null);
+          stopAdaptationPolling();
+          showNotification("Адаптацію моделі зупинено", "info");
+          return;
+        }
+
+        setAdaptationStatus("running");
+      } catch (error) {
+        console.error("Failed to sync adaptation status:", error);
+        setAdaptationStatus("failed");
+        setAdaptationJobId(null);
+        stopAdaptationPolling();
+        showNotification("Не вдалося оновити статус адаптації", "error");
+      }
+    },
+    [stopAdaptationPolling]
+  );
+
+  const syncGeneration = useCallback(
+    async (id: number) => {
+      try {
+        const response = await getGenerationStatus(id);
+        const data = response.data;
+        const total = typeof data.iterations === "number" && data.iterations > 0 ? data.iterations : 1;
+        const current = typeof data.current_iteration === "number" ? data.current_iteration : 0;
+        setGenerationProgress(Math.max(0, Math.min(100, (current / total) * 100)));
+
+        if (data.status === "completed") {
+          setGenerationStatus("completed");
+          stopGenerationPolling();
+          setGenerationId(null);
+          await loadSchedule();
+          showNotification("Генерацію розкладу завершено", "success");
+          return;
+        }
+        if (data.status === "failed") {
+          setGenerationStatus("failed");
+          stopGenerationPolling();
+          setGenerationId(null);
+          showNotification("Генерація завершилась з помилкою", "error");
+          return;
+        }
+        if (data.status === "stopped") {
+          setGenerationStatus("stopped");
+          stopGenerationPolling();
+          setGenerationId(null);
+          showNotification("Генерацію зупинено", "info");
+          return;
+        }
+
+        setGenerationStatus("running");
+      } catch (error) {
+        console.error("Failed to sync generation status:", error);
+        setGenerationStatus("failed");
+        stopGenerationPolling();
+      }
+    },
+    [stopGenerationPolling]
+  );
+
+  const handleStartModelGeneration = async () => {
+    if (!selectedModelVersion) {
+      showNotification("Оберіть модель для генерації", "error");
+      return;
+    }
+
+    try {
+      const compatibilityResponse = await checkModelCompatibility(selectedModelVersion);
+      const compatibility = compatibilityResponse.data;
+      if (!compatibility.compatible) {
+        const confirmAdapt = window.confirm(
+          `Модель несумісна: ${compatibility.detail}\n\n` +
+            "Модель буде перенавчена під вашу поточну розмірність розкладу. Продовжити?"
+        );
+
+        if (!confirmAdapt) {
+          showNotification(`Модель несумісна: ${compatibility.detail}`, "error");
+          setGenerationStatus("failed");
+          return;
+        }
+
+        const adaptationResponse = await trainingService.startModelAdaptation({
+          source_model_version: selectedModelVersion,
+          iterations: 400,
+          count: 100,
+          seed: 42,
+          train_ratio: 0.8,
+          dataset_name: "dataset_compatible_100",
+          device: "cpu",
+          promote: false,
+          iterations_mode: "total",
+        });
+
+        const jobId = adaptationResponse.data?.job_id;
+        if (!jobId) {
+          throw new Error("Adaptation job id is missing");
+        }
+
+        setAdaptationJobId(jobId);
+        setAdaptationStatus("running");
+        setAdaptationProgress(0);
+        setGenerationStatus("idle");
+
+        stopAdaptationPolling();
+        adaptationPollRef.current = window.setInterval(() => {
+          void syncAdaptation(jobId);
+        }, 3000);
+        await syncAdaptation(jobId);
+
+        showNotification(
+          "Запущено адаптацію моделі під поточну розмірність. Після завершення можна запускати генерацію.",
+          "info"
+        );
+        return;
+      }
+
+      setGenerationStatus("running");
+      setGenerationProgress(0);
+
+      const response = await generateSchedule({
+        iterations: 100,
+        preserve_locked: false,
+        use_existing: false,
+        model_version: selectedModelVersion,
+      });
+
+      const id = response.data?.id;
+      setGenerationId(id);
+      await syncGeneration(id);
+
+      stopGenerationPolling();
+      generationPollRef.current = window.setInterval(() => {
+        void syncGeneration(id);
+      }, 1000);
+      showNotification(`Генерацію запущено моделлю ${selectedModelVersion}`, "info");
+    } catch (error: any) {
+      console.error("Generation start failed:", error);
+      setGenerationStatus("failed");
+      showNotification(
+        error?.response?.data?.detail || "Не вдалося запустити генерацію",
+        "error"
+      );
+    }
+  };
+
+  const handleStopModelGeneration = async () => {
+    if (!generationId) {
+      return;
+    }
+
+    try {
+      await stopGeneration(generationId);
+      setGenerationStatus("stopped");
+      setGenerationId(null);
+      stopGenerationPolling();
+      showNotification("Генерацію зупинено", "info");
+    } catch (error) {
+      console.error("Failed to stop generation:", error);
+      showNotification("Не вдалося зупинити генерацію", "error");
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      stopGenerationPolling();
+      stopAdaptationPolling();
+    };
+  }, [stopAdaptationPolling, stopGenerationPolling]);
 
   // Handlers
   const handleUndo = async () => {
@@ -338,6 +625,21 @@ const InteractiveTimetable: React.FC = () => {
       (c) => c.day_of_week === day && c.period_number === period
     );
   };
+
+  const getOverallScoreColor = (score: number): "success" | "warning" | "error" => {
+    if (score >= 85) return "success";
+    if (score >= 65) return "warning";
+    return "error";
+  };
+
+  const hardViolations =
+    scheduleScore && typeof scheduleScore.details === "object"
+      ? scheduleScore.details.hard_violations
+      : null;
+  const softViolations =
+    scheduleScore && typeof scheduleScore.details === "object"
+      ? scheduleScore.details.soft_violations
+      : null;
 
   // Class Card Component
   const ClassCard: React.FC<{ classItem: ScheduledClass }> = ({
@@ -508,6 +810,48 @@ const InteractiveTimetable: React.FC = () => {
 
           {/* View Controls */}
           <Stack direction="row" spacing={1} alignItems="center">
+            <FormControl size="small" sx={{ minWidth: 260 }}>
+              <InputLabel>Модель для генерації</InputLabel>
+              <Select
+                value={selectedModelVersion}
+                label="Модель для генерації"
+                onChange={(e) => setSelectedModelVersion(String(e.target.value))}
+              >
+                {availableModels.map((model) => (
+                  <MenuItem key={model.name} value={model.name}>
+                    {model.name} {model.is_active ? "(active)" : ""}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+
+            <Button
+              variant="contained"
+              color={generationStatus === "running" ? "error" : "primary"}
+              onClick={generationStatus === "running" ? handleStopModelGeneration : handleStartModelGeneration}
+              disabled={availableModels.length === 0 || adaptationStatus === "running"}
+            >
+              {generationStatus === "running" ? "Зупинити генерацію" : "Генерувати розклад"}
+            </Button>
+
+            {generationStatus === "running" && (
+              <Box sx={{ minWidth: 160 }}>
+                <LinearProgress variant="determinate" value={generationProgress} />
+                <Typography variant="caption" color="text.secondary">
+                  {generationProgress.toFixed(1)}%
+                </Typography>
+              </Box>
+            )}
+
+            {adaptationStatus === "running" && (
+              <Box sx={{ minWidth: 200 }}>
+                <LinearProgress variant="determinate" value={adaptationProgress} />
+                <Typography variant="caption" color="text.secondary">
+                  Адаптація моделі: {adaptationProgress.toFixed(1)}%
+                </Typography>
+              </Box>
+            )}
+
             <ToggleButtonGroup
               value={viewMode}
               exclusive
@@ -574,7 +918,7 @@ const InteractiveTimetable: React.FC = () => {
             <Divider orientation="vertical" flexItem />
 
             <Tooltip title="Оновити">
-              <IconButton onClick={loadSchedule} size="small">
+              <IconButton onClick={() => void loadSchedule()} size="small">
                 <RefreshIcon />
               </IconButton>
             </Tooltip>
@@ -584,14 +928,66 @@ const InteractiveTimetable: React.FC = () => {
 
       {/* Timetable Grid */}
       <Paper sx={{ p: 2, overflow: "auto" }}>
-        <Typography
-          variant="h6"
-          gutterBottom
-          sx={{ display: "flex", alignItems: "center", gap: 1 }}
+        <Box
+          sx={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: 1,
+            mb: 1,
+          }}
         >
-          📅 Розклад: {filter.name}
-          <Chip size="small" label={`${schedule.length} занять`} />
-        </Typography>
+          <Typography
+            variant="h6"
+            sx={{ display: "flex", alignItems: "center", gap: 1 }}
+          >
+            📅 Розклад: {filter.name}
+            <Chip size="small" label={`${schedule.length} занять`} />
+          </Typography>
+
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+            {scoreLoading ? (
+              <Chip size="small" label="Оцінка: ..." variant="outlined" />
+            ) : scheduleScore ? (
+              <Chip
+                size="small"
+                color={getOverallScoreColor(scheduleScore.overall)}
+                label={`Оцінка: ${scheduleScore.overall.toFixed(1)}%`}
+              />
+            ) : (
+              <Chip size="small" label="Оцінка: Н/Д" variant="outlined" />
+            )}
+
+            {hardViolations !== null && (
+              <Chip
+                size="small"
+                label={`Hard: ${hardViolations}`}
+                color={hardViolations === 0 ? "success" : "error"}
+                variant="outlined"
+              />
+            )}
+            {softViolations !== null && (
+              <Chip
+                size="small"
+                label={`Soft: ${softViolations}`}
+                color={softViolations === 0 ? "success" : "warning"}
+                variant="outlined"
+              />
+            )}
+            {scoreError && (
+              <Tooltip title={scoreError}>
+                <Chip
+                  size="small"
+                  label="Оцінка недоступна"
+                  color="warning"
+                  variant="outlined"
+                  icon={<InfoIcon />}
+                />
+              </Tooltip>
+            )}
+          </Stack>
+        </Box>
 
         <Box
           sx={{

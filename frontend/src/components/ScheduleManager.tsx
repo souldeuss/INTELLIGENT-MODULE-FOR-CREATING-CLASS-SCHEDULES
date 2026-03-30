@@ -44,6 +44,7 @@ interface ScheduleFile {
   description?: string;
   meta?: {
     generation_id?: number;
+    overall_score?: number;
     best_reward?: number;
     hard_violations?: number;
     soft_violations?: number;
@@ -217,6 +218,12 @@ const ScheduleManager: React.FC = () => {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
+  const getOverallScoreColor = (score: number): "success" | "warning" | "error" => {
+    if (score >= 85) return "success";
+    if (score >= 65) return "warning";
+    return "error";
+  };
+
   return (
     <Box sx={{ p: 3 }}>
       <Box
@@ -311,42 +318,58 @@ const ScheduleManager: React.FC = () => {
                     {formatSize(file.size_bytes || 0)}
                   </TableCell>
                   <TableCell align="center">
-                    {file.meta && (
-                      <Box
-                        sx={{
-                          display: "flex",
-                          flexDirection: "column",
-                          gap: 0.5,
-                        }}
-                      >
-                        {file.meta.best_reward !== undefined && (
-                          <Tooltip title="Найкраща винагорода">
-                            <Chip
-                              label={`R: ${file.meta.best_reward.toFixed(1)}`}
-                              size="small"
-                              color={
-                                file.meta.best_reward > 0
-                                  ? "success"
-                                  : "warning"
-                              }
-                            />
-                          </Tooltip>
-                        )}
-                        {file.meta.hard_violations !== undefined && (
-                          <Tooltip title="Жорсткі порушення">
-                            <Chip
-                              label={`H: ${file.meta.hard_violations}`}
-                              size="small"
-                              color={
-                                file.meta.hard_violations === 0
-                                  ? "success"
-                                  : "error"
-                              }
-                            />
-                          </Tooltip>
-                        )}
-                      </Box>
-                    )}
+                    <Box
+                      sx={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 0.5,
+                        alignItems: "center",
+                      }}
+                    >
+                      {typeof file.meta?.overall_score === "number" ? (
+                        <Tooltip title="Загальна оцінка розкладу (0-100)">
+                          <Chip
+                            label={`O: ${file.meta.overall_score.toFixed(1)}%`}
+                            size="small"
+                            color={getOverallScoreColor(file.meta.overall_score)}
+                          />
+                        </Tooltip>
+                      ) : (
+                        <Tooltip title="Для цього файлу оцінка ще не збережена">
+                          <Chip label="O: Н/Д" size="small" variant="outlined" />
+                        </Tooltip>
+                      )}
+                      {file.meta?.best_reward !== undefined && (
+                        <Tooltip title="Найкраща винагорода">
+                          <Chip
+                            label={`R: ${file.meta.best_reward.toFixed(1)}`}
+                            size="small"
+                            color={file.meta.best_reward > 0 ? "success" : "warning"}
+                            variant="outlined"
+                          />
+                        </Tooltip>
+                      )}
+                      {file.meta?.hard_violations !== undefined && (
+                        <Tooltip title="Жорсткі порушення">
+                          <Chip
+                            label={`H: ${file.meta.hard_violations}`}
+                            size="small"
+                            color={file.meta.hard_violations === 0 ? "success" : "error"}
+                            variant="outlined"
+                          />
+                        </Tooltip>
+                      )}
+                      {file.meta?.soft_violations !== undefined && (
+                        <Tooltip title="М'які порушення">
+                          <Chip
+                            label={`S: ${file.meta.soft_violations}`}
+                            size="small"
+                            color={file.meta.soft_violations === 0 ? "success" : "warning"}
+                            variant="outlined"
+                          />
+                        </Tooltip>
+                      )}
+                    </Box>
                   </TableCell>
                   <TableCell>
                     <Typography

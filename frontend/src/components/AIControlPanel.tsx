@@ -22,6 +22,7 @@ import {
   TextField,
   Stack,
   CircularProgress,
+  MenuItem,
 } from "@mui/material";
 import {
   PlayArrow as PlayIcon,
@@ -57,6 +58,8 @@ import {
   stopGeneration,
   clearSchedule,
   GenerationParams,
+  ModelVersionItem,
+  trainingService,
 } from "../services/api";
 
 interface TrainingMetrics {
@@ -92,6 +95,11 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
   const [iterations, setIterations] = useState(100);
   const [preserveLocked, setPreserveLocked] = useState(true);
   const [useExisting, setUseExisting] = useState(false);
+  const [availableModels, setAvailableModels] = useState<ModelVersionItem[]>([]);
+  const [selectedModelVersion, setSelectedModelVersion] = useState<string>("");
+  const [activeModelVersion, setActiveModelVersion] = useState<string>("");
+  const [modelSelectionError, setModelSelectionError] = useState<string | null>(null);
+  const [loadedModelMessage, setLoadedModelMessage] = useState<string | null>(null);
 
   // PPO Hyperparameters
   const [learningRate, setLearningRate] = useState(0.0003);
@@ -283,12 +291,14 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
     setCurrentIteration(0);
     setMetrics([]);
     setBestReward(null);
+    setLoadedModelMessage(null);
 
     try {
       const params: GenerationParams = {
         iterations,
         preserve_locked: preserveLocked,
         use_existing: useExisting,
+        model_version: selectedModelVersion || undefined,
         learning_rate: learningRate,
         gamma,
         epsilon,
@@ -301,6 +311,9 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
       setGenerationId(startedId);
       persistGenerationId(startedId);
       startPolling(startedId);
+      setLoadedModelMessage(
+        `Генерація запущена з моделлю: ${selectedModelVersion || activeModelVersion || "active"}`
+      );
 
       // Estimate time
       const estimatedSeconds = iterations * 0.3; // ~0.3s per iteration
@@ -310,6 +323,32 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
       applyTerminalStatus("failed");
     }
   };
+
+  const loadModelVersions = useCallback(async () => {
+    try {
+      setModelSelectionError(null);
+      const response = await trainingService.getModelVersions();
+      const versions = response.data?.versions || [];
+      const activeModel = response.data?.active_model || "";
+
+      setAvailableModels(versions);
+      setActiveModelVersion(activeModel);
+
+      setSelectedModelVersion((prev) => {
+        if (prev && versions.some((v) => v.name === prev)) {
+          return prev;
+        }
+        if (activeModel && versions.some((v) => v.name === activeModel)) {
+          return activeModel;
+        }
+        return versions[0]?.name || "";
+      });
+    } catch (error: any) {
+      setModelSelectionError(
+        error?.response?.data?.detail || "Не вдалося завантажити список моделей"
+      );
+    }
+  }, []);
 
   // Stop generation
   const handleStop = async () => {
@@ -322,6 +361,10 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
       }
     }
   };
+
+  useEffect(() => {
+    void loadModelVersions();
+  }, [loadModelVersions]);
 
   useEffect(() => {
     const persistedIdRaw = localStorage.getItem(ACTIVE_GENERATION_STORAGE_KEY);
@@ -449,7 +492,7 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
                 AI Control Center
               </Typography>
               <Typography variant="body2" color="text.secondary">
-                Deep Reinforcement Learning (PPO) Schedule Generator
+                Генерація розкладу натренованою PPO моделлю (без донавчання)
               </Typography>
             </Box>
           </Box>
@@ -495,7 +538,7 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
                     disabled={isGenerating}
                   />
                   <Typography variant="caption" color="text.secondary">
-                    Приблизний час: {formatTime(iterations * 0.3)}
+                    Приблизний час генерації: {formatTime(iterations * 0.05)}
                   </Typography>
                 </Box>
 
@@ -518,9 +561,42 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
                         disabled={isGenerating}
                       />
                     }
-                    label="Використовувати існуючий розклад як базу"
+                    label="Використовувати поточний розклад як базу (без навчання)"
                   />
                 </Stack>
+
+                <TextField
+                  select
+                  fullWidth
+                  label="Model Version"
+                  value={selectedModelVersion}
+                  onChange={(e) => setSelectedModelVersion(e.target.value)}
+                  disabled={isGenerating || availableModels.length === 0}
+                  margin="normal"
+                  helperText={
+                    activeModelVersion
+                      ? `Активна модель у реєстрі: ${activeModelVersion}`
+                      : "Оберіть модель для генерації"
+                  }
+                >
+                  {availableModels.map((model) => (
+                    <MenuItem key={model.name} value={model.name}>
+                      {model.name} {model.is_active ? "(active)" : ""}
+                    </MenuItem>
+                  ))}
+                </TextField>
+
+                {modelSelectionError && (
+                  <Alert severity="warning" sx={{ mt: 1 }}>
+                    {modelSelectionError}
+                  </Alert>
+                )}
+
+                {loadedModelMessage && (
+                  <Alert severity="info" sx={{ mt: 1 }}>
+                    {loadedModelMessage}
+                  </Alert>
+                )}
               </CardContent>
             </Card>
 
@@ -668,7 +744,7 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
             <Card sx={{ mb: 2 }}>
               <CardContent>
                 <Typography variant="h6" gutterBottom>
-                  📊 Прогрес навчання
+                  📊 Прогрес генерації
                 </Typography>
 
                 {isGenerating && (
@@ -717,7 +793,7 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
               <Card>
                 <CardContent>
                   <Typography variant="h6" gutterBottom>
-                    📈 Динаміка Reward
+                      📈 Телеметрія генерації
                   </Typography>
                   <ResponsiveContainer width="100%" height={250}>
                     <AreaChart data={metrics}>

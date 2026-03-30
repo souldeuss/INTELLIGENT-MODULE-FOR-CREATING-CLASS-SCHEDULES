@@ -62,6 +62,10 @@ class TimetablingEnvironmentV2:
     VARIANCE_THRESHOLD = 2.0            # Поріг дисперсії для termination
     DAY_BALANCE_ALPHA = 1.5             # Вага penalty за variance
     DAY_BALANCE_BETA = 1.0              # Вага penalty за відхилення від target
+    MIN_WEEKLY_LESSONS_PER_GROUP = 10   # Мінімум занять на тиждень для групи
+    PENALTY_BELOW_MIN_WEEKLY = -12.0    # Штраф за кожне заняття нижче мінімуму
+    PENALTY_GAP_HOUR = -1.5             # Штраф за "вікна" між парами в межах дня
+    REWARD_CONSECUTIVE_LESSON = 1.0     # Бонус за суміжні пари
 
     def __init__(
         self,
@@ -196,6 +200,7 @@ class TimetablingEnvironmentV2:
         
         # Лічильники для обчислення target_per_day
         self.group_total_lessons = np.zeros(self.n_groups, dtype=np.int32)
+        group_course_candidates: Dict[int, List[int]] = {g_idx: [] for g_idx in range(self.n_groups)}
         
         for course_idx, course in enumerate(self.courses):
             hours = course.hours_per_week if hasattr(course, 'hours_per_week') else 2
@@ -212,11 +217,36 @@ class TimetablingEnvironmentV2:
             for group_id in group_ids:
                 if group_id in self.group_idx:
                     group_idx = self.group_idx[group_id]
+                    if course_idx not in group_course_candidates[group_idx]:
+                        group_course_candidates[group_idx].append(course_idx)
                     # Додаємо hours разів для цієї пари курс-група
                     for _ in range(hours):
                         self.pending_courses.append((course_idx, group_idx))
                     # Оновлюємо лічильник загальних занять для групи
                     self.group_total_lessons[group_idx] += hours
+
+        # Гарантуємо мінімум занять на тиждень для кожної групи,
+        # щоб розклад не був "порожнім".
+        for group_idx in range(self.n_groups):
+            current_total = int(self.group_total_lessons[group_idx])
+            if current_total >= self.MIN_WEEKLY_LESSONS_PER_GROUP:
+                continue
+
+            candidates = group_course_candidates.get(group_idx, [])
+            if not candidates:
+                continue
+
+            missing = self.MIN_WEEKLY_LESSONS_PER_GROUP - current_total
+            for i in range(missing):
+                extra_course_idx = candidates[i % len(candidates)]
+                self.pending_courses.append((extra_course_idx, group_idx))
+                self.group_total_lessons[group_idx] += 1
+                self.course_hours_remaining[extra_course_idx] += 1
+
+            logger.info(
+                f"➕ Group {self.groups[group_idx].code}: додано {missing} занять для досягнення мінімуму "
+                f"{self.MIN_WEEKLY_LESSONS_PER_GROUP}/тиждень"
+            )
         
         # === ОБЧИСЛЕННЯ TARGET ЗАНЯТЬ НА ДЕНЬ ===
         # target = загальна кількість занять / 5 днів
@@ -375,6 +405,21 @@ class TimetablingEnvironmentV2:
                 # Бонус за ідеальний баланс
                 reward += self.REWARD_BALANCED_DAY * self.n_groups
                 logger.info(f"✅ Розклад ідеально збалансовано!")
+
+            # Додатковий штраф, якщо група отримала менше мінімуму занять.
+            min_weekly_penalty = 0.0
+            for g_idx in range(self.n_groups):
+                weekly_total = int(np.sum(self.group_classes_per_day[g_idx]))
+                if weekly_total < self.MIN_WEEKLY_LESSONS_PER_GROUP:
+                    missing = self.MIN_WEEKLY_LESSONS_PER_GROUP - weekly_total
+                    min_weekly_penalty += abs(self.PENALTY_BELOW_MIN_WEEKLY) * missing
+
+            if min_weekly_penalty > 0:
+                reward -= min_weekly_penalty
+                logger.warning(
+                    f"⚠️ Частина груп має менше {self.MIN_WEEKLY_LESSONS_PER_GROUP} занять/тиждень. "
+                    f"Penalty: -{min_weekly_penalty:.2f}"
+                )
             
             logger.info(f"✅ Розклад повністю сформовано! Reward: {reward:.2f}")
         
@@ -390,6 +435,7 @@ class TimetablingEnvironmentV2:
             "completion_rate": len(self.assignments_list) / max(self.total_classes_to_schedule, 1),
             "is_balanced": is_balanced,
             "balance_score": self._calculate_balance_score(),
+            "weekly_group_load": [int(np.sum(self.group_classes_per_day[g])) for g in range(self.n_groups)],
             "day_variance": self._get_day_variance_stats()
         }
         
@@ -523,6 +569,7 @@ class TimetablingEnvironmentV2:
         day = self.timeslot_days[timeslot_idx]
         classes_today = self.group_classes_per_day[group_idx, day]
         target = self.target_lessons_per_day[group_idx]
+        period = int(self.timeslot_periods[timeslot_idx])
         
         # Штраф за перевищення target + допустиме відхилення
         if classes_today >= target + self.MAX_DAY_DEVIATION:
@@ -536,6 +583,23 @@ class TimetablingEnvironmentV2:
         # Бонус якщо близько до target
         if abs(classes_today - target) <= self.MAX_DAY_DEVIATION:
             reward += self.REWARD_TARGET_DAY_LOAD * 0.5
+
+        # === МІНІМІЗАЦІЯ "ВІКОН" В РОЗКЛАДІ ГРУПИ ===
+        day_slots = np.where(self.timeslot_days == day)[0]
+        occupied_periods = sorted(
+            [int(self.timeslot_periods[ts]) for ts in day_slots if self.group_schedule[group_idx, ts] > 0]
+        )
+
+        if occupied_periods:
+            min_distance = min(abs(period - p) for p in occupied_periods)
+            if min_distance == 1:
+                reward += self.REWARD_CONSECUTIVE_LESSON
+            elif min_distance >= 3:
+                reward += self.PENALTY_GAP_HOUR
+
+            before_gaps = self._count_day_gaps(occupied_periods)
+            after_gaps = self._count_day_gaps(sorted(occupied_periods + [period]))
+            reward += self.PENALTY_GAP_HOUR * (after_gaps - before_gaps)
         
         # === VARIANCE PENALTY (INCREMENTAL) ===
         # Обчислюємо як змінюється variance після цього призначення
@@ -564,8 +628,25 @@ class TimetablingEnvironmentV2:
         
         if not has_hard_conflict:
             reward += self.REWARD_VALID_ASSIGNMENT
+
+        # М'який бонус для груп, які ще нижче мінімуму 10 занять/тиждень.
+        weekly_total = int(np.sum(self.group_classes_per_day[group_idx]))
+        if weekly_total < self.MIN_WEEKLY_LESSONS_PER_GROUP:
+            reward += 0.5
         
         return reward
+
+    @staticmethod
+    def _count_day_gaps(periods: List[int]) -> int:
+        """Повертає кількість порожніх пар між заняттями в межах дня."""
+        if len(periods) < 2:
+            return 0
+        gaps = 0
+        for i in range(1, len(periods)):
+            diff = periods[i] - periods[i - 1]
+            if diff > 1:
+                gaps += diff - 1
+        return gaps
 
     def _count_hard_violations(self) -> int:
         """Підрахунок жорстких порушень."""
@@ -592,6 +673,14 @@ class TimetablingEnvironmentV2:
             # Variance check
             if np.var(day_loads) > self.VARIANCE_THRESHOLD:
                 violations += 1
+
+            # "Вікна" в межах дня для групи
+            for day in range(5):
+                day_slots = np.where(self.timeslot_days == day)[0]
+                occupied_periods = sorted(
+                    [int(self.timeslot_periods[ts]) for ts in day_slots if self.group_schedule[group_idx, ts] > 0]
+                )
+                violations += self._count_day_gaps(occupied_periods)
         
         return violations
 
@@ -656,6 +745,7 @@ class TimetablingEnvironmentV2:
             _, teacher_idx, _, classroom_idx, timeslot_idx = action
             day = self.timeslot_days[timeslot_idx]
             day_load = current_loads[day]
+            period = int(self.timeslot_periods[timeslot_idx])
             
             score = 0
             
@@ -677,8 +767,23 @@ class TimetablingEnvironmentV2:
                 score += deviation * 30
             
             # === ВТОРИННИЙ ПРІОРИТЕТ: середні пари ===
-            period = self.timeslot_periods[timeslot_idx]
             score += abs(period - 3) * 2
+
+            # === ДОДАТКОВО: менше "вікон" та більш послідовне призначення ===
+            day_slots = np.where(self.timeslot_days == day)[0]
+            occupied_periods = sorted(
+                [int(self.timeslot_periods[ts]) for ts in day_slots if self.group_schedule[group_idx, ts] > 0]
+            )
+            if occupied_periods:
+                min_distance = min(abs(period - p) for p in occupied_periods)
+                if min_distance == 1:
+                    score -= 25
+                elif min_distance >= 3:
+                    score += 35
+
+                before_gaps = self._count_day_gaps(occupied_periods)
+                after_gaps = self._count_day_gaps(sorted(occupied_periods + [period]))
+                score += (after_gaps - before_gaps) * 40
             
             return score
         
@@ -1015,6 +1120,22 @@ class TimetablingEnvironmentV2:
         # === ВТОРИННИЙ: середні пари ===
         period = self.timeslot_periods[timeslot_idx]
         score -= abs(period - 3)
+
+        # === ДОДАТКОВО: компактність розкладу (менше "вікон") ===
+        day_slots = np.where(self.timeslot_days == day)[0]
+        occupied_periods = sorted(
+            [int(self.timeslot_periods[ts]) for ts in day_slots if self.group_schedule[group_idx, ts] > 0]
+        )
+        if occupied_periods:
+            min_distance = min(abs(int(period) - p) for p in occupied_periods)
+            if min_distance == 1:
+                score += 2.0
+            elif min_distance >= 3:
+                score -= 3.0
+
+            before_gaps = self._count_day_gaps(occupied_periods)
+            after_gaps = self._count_day_gaps(sorted(occupied_periods + [int(period)]))
+            score -= (after_gaps - before_gaps) * 4.0
         
         # === ВТОРИННИЙ: тип аудиторії ===
         if self.course_requires_lab[course_idx] and self.classroom_types[classroom_idx] == 1:

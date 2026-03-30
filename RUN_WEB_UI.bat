@@ -40,7 +40,7 @@ echo.
 echo   Якщо Backend ще не запущений, виконайте у іншому терміналі:
 echo.
 echo   cd backend
-echo   python -m uvicorn app.main:app --reload
+echo   python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 echo.
 echo ══════════════════════════════════════════════════════════════
 echo.
@@ -53,7 +53,8 @@ echo.
 echo 🚀 Запуск React Frontend...
 echo.
 echo Web UI буде доступний за адресою: http://localhost:3000
-echo Backend API повинен працювати на: http://localhost:8000
+echo Web UI у LAN: http://YOUR_PC_IP:3000
+echo Backend API повинен працювати на: http://YOUR_PC_IP:8000
 echo.
 echo Натисніть Ctrl+C, щоб зупинити сервер
 echo.
@@ -61,4 +62,5 @@ echo ═════════════════════════
 echo.
 
 cd frontend
+set "HOST=0.0.0.0"
 npm start

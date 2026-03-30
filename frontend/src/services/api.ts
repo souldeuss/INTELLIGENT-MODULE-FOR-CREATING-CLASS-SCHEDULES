@@ -1,7 +1,8 @@
 import axios from "axios";
 
+const backendHost = window.location.hostname || "localhost";
 const API_BASE_URL =
-  process.env.REACT_APP_API_URL || "http://localhost:8000/api";
+  process.env.REACT_APP_API_URL || `http://${backendHost}:8000/api`;
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -47,6 +48,7 @@ export interface GenerationParams {
   iterations: number;
   preserve_locked?: boolean;
   use_existing?: boolean;
+  model_version?: string;
   // PPO Hyperparameters
   learning_rate?: number;
   gamma?: number;
@@ -67,6 +69,29 @@ export const generateSchedule = (data: GenerationParams) =>
 
 export const getGenerationStatus = (id: number) =>
   api.get(`/schedule/status/${id}`);
+
+export interface ModelCompatibilityResponse {
+  model_version: string;
+  compatible: boolean;
+  reason: "ok" | "model_not_found" | "meta_not_found" | "dimension_mismatch" | string;
+  detail: string;
+  current: {
+    state_dim: number;
+    action_dim: number;
+    raw_action_dim: number;
+  };
+  model: {
+    model_found: boolean;
+    meta_found: boolean;
+    state_dim: number | null;
+    action_dim: number | null;
+  };
+}
+
+export const checkModelCompatibility = (modelVersion: string) =>
+  api.get<ModelCompatibilityResponse>("/schedule/model-compatibility", {
+    params: { model_version: modelVersion },
+  });
 
 export const stopGeneration = (id: number) => api.post(`/schedule/stop/${id}`);
 
@@ -151,13 +176,29 @@ export const scheduleService = {
 };
 
 // ==================== AI EXPLAINABILITY ====================
+export interface ScheduleScoreResponse {
+  overall: number;
+  teacher_conflicts: number;
+  room_conflicts: number;
+  group_conflicts: number;
+  gap_penalty: number;
+  distribution: number;
+  details:
+    | string
+    | {
+        total_classes: number;
+        hard_violations: number;
+        soft_violations: number;
+      };
+}
+
 export const aiService = {
   // Отримати пояснення для конкретного рішення AI
   getDecisionExplanation: (classId: number) =>
     api.get(`/ai/explain/${classId}`),
 
   // Отримати загальний score розкладу
-  getScheduleScore: () => api.get("/ai/score"),
+  getScheduleScore: () => api.get<ScheduleScoreResponse>("/ai/score"),
 
   // Отримати історію reward під час навчання
   getTrainingHistory: (generationId?: number) =>
@@ -277,11 +318,15 @@ export interface TrainingStatusResponse {
 
 export interface TrainingHistoryResponse {
   iteration: number[];
+  model_version?: string;
+  data_available?: boolean;
+  source_file?: string | null;
   policy_loss?: Array<number | null>;
   value_loss?: Array<number | null>;
   total_loss?: Array<number | null>;
   episode_reward?: Array<number | null>;
   average_reward?: Array<number | null>;
+  reward_per_step?: Array<number | null>;
   learning_rate?: Array<number | null>;
   hard_violations?: Array<number | null>;
   soft_violations?: Array<number | null>;
@@ -292,11 +337,14 @@ export interface TrainingHistoryResponse {
 
 export interface BestSchedulePreviewResponse {
   available: boolean;
+  data_available?: boolean;
   message?: string;
   source_file?: string;
+  source_model_version?: string;
   updated_at?: string;
   meta?: {
     generation_id?: number;
+    model_version?: string;
     best_reward?: number;
     hard_violations?: number;
     soft_violations?: number;
@@ -321,7 +369,126 @@ export interface BestSchedulePreviewResponse {
   }>;
 }
 
+export interface Dataset100PresetStatusResponse {
+  job_id: string;
+  status: "running" | "completed" | "failed" | "stopped" | "unknown";
+  pid?: number;
+  return_code?: number | null;
+  created_at?: string;
+  stopped_at?: string;
+  updated_at?: string;
+  finished_at?: string;
+  dataset_name?: string;
+  manifest?: string;
+  iterations?: number;
+  seed?: number;
+  command?: string[];
+  log_path?: string;
+  cases_total?: number | null;
+  cases_done?: number;
+  current_case?: number | null;
+  remaining_cases?: number | null;
+  progress_percent?: number | null;
+  effective_iterations?: number | null;
+  iterations_mode?: string | null;
+  dataset_size_mode?: string | null;
+  dataset_size?: number | null;
+  run_id?: string | null;
+  model_version?: string | null;
+}
+
+export interface ModelTrainingCreateRequest {
+  iterations?: number;
+  seed?: number;
+  train_ratio?: number;
+  dataset_size_mode?: "compatible_100" | "compatible_1000" | "custom";
+  custom_case_count?: number;
+  dataset_name?: string;
+  device?: string;
+  promote?: boolean;
+  regenerate_dataset?: boolean;
+  iterations_mode?: "total" | "per-case";
+}
+
+export interface ModelAdaptRequest {
+  source_model_version: string;
+  iterations?: number;
+  count?: number;
+  seed?: number;
+  train_ratio?: number;
+  dataset_name?: string;
+  device?: string;
+  promote?: boolean;
+  iterations_mode?: "total" | "per-case";
+}
+
+export interface ModelVersionItem {
+  name: string;
+  is_active: boolean;
+  size_bytes: number;
+  updated_at: number;
+  avg_reward?: number | null;
+  final_loss?: number | null;
+  training_duration?: number | null;
+  success_rate?: number | null;
+  hard_violations?: number;
+  soft_violations?: number;
+  training_sessions_count?: number;
+}
+
+export interface TrainingModelsResponse {
+  model_dir: string;
+  active_model: string;
+  total: number;
+  versions: ModelVersionItem[];
+}
+
+export interface TrainingCheckpointItem {
+  checkpoint_id: string;
+  created_at: string;
+  iteration: number;
+  best_reward: number;
+  current_reward: number;
+  hard_violations: number;
+  learning_rate: number;
+  description: string;
+  tags: string[];
+}
+
+export interface TrainingCheckpointsResponse {
+  total: number;
+  checkpoints: TrainingCheckpointItem[];
+}
+
+export interface TrainingSessionItem {
+  session_id: string;
+  start_time: string;
+  end_time?: string | null;
+  status: string;
+  total_iterations: number;
+  best_reward: number;
+  model_version?: string | null;
+  dataset_version?: string | null;
+  file: string;
+}
+
+export interface TrainingSessionsResponse {
+  sessions: TrainingSessionItem[];
+}
+
+export interface Dataset100PresetJobsResponse {
+  jobs: Dataset100PresetStatusResponse[];
+}
+
+export interface ModelAdaptJobsResponse {
+  jobs: Dataset100PresetStatusResponse[];
+}
+
 export const trainingService = {
+  /**
+   * @deprecated Legacy dataset-100 preset endpoint. Use createModelTraining with
+   * dataset_size_mode="compatible_100" or "compatible_1000".
+   */
   startDataset100Preset: (payload?: {
     iterations?: number;
     seed?: number;
@@ -332,26 +499,70 @@ export const trainingService = {
     regenerate_dataset?: boolean;
   }) => api.post("/training/presets/dataset-100/start", payload || {}),
 
-  getDataset100PresetJobs: () => api.get("/training/presets/dataset-100/jobs"),
+  /**
+   * @deprecated Legacy dataset-100 preset endpoint.
+   */
+  getDataset100PresetJobs: () =>
+    api.get<Dataset100PresetJobsResponse>("/training/presets/dataset-100/jobs"),
 
+  /**
+   * @deprecated Legacy dataset-100 preset endpoint.
+   */
   getDataset100PresetStatus: (jobId: string) =>
-    api.get(`/training/presets/dataset-100/status/${jobId}`),
+    api.get<Dataset100PresetStatusResponse>(`/training/presets/dataset-100/status/${jobId}`),
+
+  createModelTraining: (payload?: ModelTrainingCreateRequest) =>
+    api.post<Dataset100PresetStatusResponse>("/training/models/create", payload || {}),
+
+  getModelTrainingJobs: () =>
+    api.get<{ jobs: Dataset100PresetStatusResponse[] }>("/training/models/create/jobs"),
+
+  getModelTrainingStatus: (jobId: string) =>
+    api.get<Dataset100PresetStatusResponse>(`/training/models/create/status/${jobId}`),
+
+  stopModelTraining: (jobId: string) =>
+    api.post<Dataset100PresetStatusResponse>(`/training/models/create/stop/${jobId}`),
+
+  startModelAdaptation: (payload: ModelAdaptRequest) =>
+    api.post<Dataset100PresetStatusResponse>("/training/models/adapt", payload),
+
+  getModelAdaptationJobs: () =>
+    api.get<ModelAdaptJobsResponse>("/training/models/adapt/jobs"),
+
+  getModelAdaptationStatus: (jobId: string) =>
+    api.get<Dataset100PresetStatusResponse>(`/training/models/adapt/status/${jobId}`),
+
+  stopModelAdaptation: (jobId: string) =>
+    api.post<Dataset100PresetStatusResponse>(`/training/models/adapt/stop/${jobId}`),
 
   getStatus: () => api.get<TrainingStatusResponse>("/training/status"),
 
-  getHistory: (lastN: number = 200) =>
+  getHistory: (lastN: number = 200, modelVersion?: string) =>
     api.get<TrainingHistoryResponse>("/training/metrics/history", {
       params: {
         metrics:
-          "policy_loss,value_loss,total_loss,episode_reward,average_reward,learning_rate,hard_violations,soft_violations,success_count,success_rate,completion_rate",
+          "policy_loss,value_loss,total_loss,episode_reward,average_reward,reward_per_step,learning_rate,hard_violations,soft_violations,success_count,success_rate,completion_rate",
         last_n: lastN,
+        model_version: modelVersion || undefined,
       },
     }),
 
-  getBestSchedulePreview: (maxRows: number = 20) =>
+  getBestSchedulePreview: (maxRows: number = 20, modelVersion?: string) =>
     api.get<BestSchedulePreviewResponse>("/training/best-schedule-preview", {
-      params: { max_rows: maxRows },
+      params: {
+        max_rows: maxRows,
+        model_version: modelVersion || undefined,
+      },
     }),
+
+  getModelVersions: () => api.get<TrainingModelsResponse>("/training/models"),
+
+  getModelMetrics: (modelName: string) =>
+    api.get<TrainingHistoryResponse>(`/training/models/${modelName}/metrics`),
+
+  getCheckpoints: () => api.get<TrainingCheckpointsResponse>("/training/checkpoints"),
+
+  getTrainingSessions: () => api.get<TrainingSessionsResponse>("/training/sessions"),
 
   getLegacyMetricsSnapshot: () => api.get("/schedule/training-metrics"),
 };

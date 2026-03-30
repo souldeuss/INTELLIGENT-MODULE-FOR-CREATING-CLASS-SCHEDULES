@@ -1,2 +1,8 @@
 # Ignore frontend build and dependencies
 frontend/node_modules/
+backend/saved_schedules/
+backend/saved_models/
+backend/__pycache__/
+backend/training_metrics/
+data/
+saved_models/

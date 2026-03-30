@@ -1,4 +1,6 @@
 """FastAPI main application."""
+import os
+
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -17,9 +19,21 @@ app = FastAPI(
 )
 
 # CORS
+default_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
+extra_origins = [
+    origin.strip()
+    for origin in os.getenv("CORS_ALLOW_ORIGINS", "").split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # React dev server
+    allow_origins=default_origins + extra_origins,
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|(?:\d{1,3}\.){3}\d{1,3})(?::\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

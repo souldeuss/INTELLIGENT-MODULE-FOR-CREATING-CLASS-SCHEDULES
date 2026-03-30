@@ -15,7 +15,7 @@ Endpoints:
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from pathlib import Path
 from datetime import datetime
 import json
@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/training", tags=["Training"])
 
 _preset_jobs: Dict[str, Dict[str, Any]] = {}
+_adapt_jobs: Dict[str, Dict[str, Any]] = {}
 
 
 DAY_LABELS = {
@@ -178,7 +179,11 @@ def _build_session_summary(
     }
 
 
-def _read_latest_schedule_file() -> Optional[Path]:
+def _normalize_model_name(model_name: str) -> str:
+    return model_name if model_name.endswith(".pt") else f"{model_name}.pt"
+
+
+def _read_latest_schedule_file(model_version: Optional[str] = None) -> Optional[Path]:
     candidate_dirs = [
         Path("./saved_schedules"),
         Path("./backend/saved_schedules"),
@@ -196,7 +201,23 @@ def _read_latest_schedule_file() -> Optional[Path]:
     if not schedule_files:
         return None
 
-    return max(schedule_files, key=lambda p: p.stat().st_mtime)
+    if not model_version:
+        return max(schedule_files, key=lambda p: p.stat().st_mtime)
+
+    normalized_model = _normalize_model_name(model_version)
+    for schedule_file in sorted(schedule_files, key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            with open(schedule_file, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
+            source_model = meta.get("model_version") if isinstance(meta, dict) else None
+            if isinstance(source_model, str) and source_model.strip():
+                if _normalize_model_name(source_model.strip()) == normalized_model:
+                    return schedule_file
+        except Exception:
+            continue
+
+    return None
 
 
 def _load_legacy_training_metrics() -> Optional[Dict[str, Any]]:
@@ -230,6 +251,7 @@ def _build_history_from_legacy(legacy_data: Dict[str, Any]) -> Dict[str, List[An
     hard_violations = metrics.get("hard_violations") if isinstance(metrics.get("hard_violations"), list) else []
     soft_violations = metrics.get("soft_violations") if isinstance(metrics.get("soft_violations"), list) else []
     completion_rates = metrics.get("completion_rates") if isinstance(metrics.get("completion_rates"), list) else []
+    reward_per_step = metrics.get("reward_per_step") if isinstance(metrics.get("reward_per_step"), list) else []
 
     series_lengths = [
         len(rewards),
@@ -238,6 +260,7 @@ def _build_history_from_legacy(legacy_data: Dict[str, Any]) -> Dict[str, List[An
         len(hard_violations),
         len(soft_violations),
         len(completion_rates),
+        len(reward_per_step),
     ]
     total_points = max(series_lengths) if series_lengths else 0
 
@@ -253,6 +276,7 @@ def _build_history_from_legacy(legacy_data: Dict[str, Any]) -> Dict[str, List[An
     hard_violations = _fit(hard_violations, None)
     soft_violations = _fit(soft_violations, None)
     completion_rates = _fit(completion_rates, None)
+    reward_per_step = _fit(reward_per_step, None)
 
     average_reward: List[Optional[float]] = []
     running_sum = 0.0
@@ -281,6 +305,7 @@ def _build_history_from_legacy(legacy_data: Dict[str, Any]) -> Dict[str, List[An
         "total_loss": total_loss,
         "episode_reward": rewards,
         "average_reward": average_reward,
+        "reward_per_step": reward_per_step,
         "learning_rate": [float(default_lr)] * total_points,
         "hard_violations": hard_violations,
         "soft_violations": soft_violations,
@@ -311,6 +336,150 @@ def _resolve_evaluation_report(model_version: str) -> Optional[Path]:
         if report_path.exists():
             return report_path
     return None
+
+
+def _resolve_model_metrics_file(model_version: str, model_dir: Optional[Path] = None) -> Optional[Path]:
+    selected_model = model_version if model_version.endswith(".pt") else f"{model_version}.pt"
+    run_id = _extract_run_id(selected_model)
+
+    root = _workspace_root()
+    resolved_model_dir = model_dir or _resolve_model_dir()
+
+    if not run_id and selected_model == "actor_critic_best.pt":
+        run_id = _extract_run_id(get_active_model_name(resolved_model_dir))
+
+    candidates: List[Path] = []
+
+    if run_id:
+        candidates.extend(
+            [
+                resolved_model_dir / f"training_metrics_{run_id}.json",
+                resolved_model_dir / f"metrics_{run_id}.json",
+                root / "backend" / "saved_models" / f"training_metrics_{run_id}.json",
+                root / "saved_models" / f"training_metrics_{run_id}.json",
+                root / "backend" / "training_metrics" / f"training_metrics_{run_id}.json",
+                root / "backend" / "training_metrics" / f"metrics_{run_id}.json",
+            ]
+        )
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _empty_history_payload() -> Dict[str, List[Any]]:
+    return {
+        "iteration": [],
+        "policy_loss": [],
+        "value_loss": [],
+        "total_loss": [],
+        "episode_reward": [],
+        "average_reward": [],
+        "reward_per_step": [],
+        "learning_rate": [],
+        "hard_violations": [],
+        "soft_violations": [],
+        "completion_rate": [],
+        "success_count": [],
+        "success_rate": [],
+    }
+
+
+def _build_history_from_steps_payload(payload: Dict[str, Any]) -> Dict[str, List[Any]]:
+    steps = payload.get("steps") if isinstance(payload.get("steps"), list) else []
+    if not steps:
+        return {}
+
+    iteration: List[int] = []
+    policy_loss: List[Optional[float]] = []
+    value_loss: List[Optional[float]] = []
+    total_loss: List[Optional[float]] = []
+    episode_reward: List[Optional[float]] = []
+    average_reward: List[Optional[float]] = []
+    learning_rate: List[Optional[float]] = []
+    hard_violations: List[Optional[int]] = []
+    soft_violations: List[Optional[int]] = []
+    completion_rate: List[Optional[float]] = []
+    reward_per_step: List[Optional[float]] = []
+
+    for idx, step in enumerate(steps):
+        if not isinstance(step, dict):
+            continue
+
+        iteration_value = step.get("iteration")
+        if isinstance(iteration_value, (int, float)):
+            iteration.append(int(iteration_value))
+        else:
+            iteration.append(idx)
+
+        p_loss = step.get("policy_loss")
+        v_loss = step.get("value_loss")
+        t_loss = step.get("total_loss")
+
+        p_loss_value = float(p_loss) if isinstance(p_loss, (int, float)) else None
+        v_loss_value = float(v_loss) if isinstance(v_loss, (int, float)) else None
+        if isinstance(t_loss, (int, float)):
+            total_loss_value: Optional[float] = float(t_loss)
+        elif p_loss_value is not None and v_loss_value is not None:
+            total_loss_value = p_loss_value + v_loss_value
+        else:
+            total_loss_value = None
+
+        policy_loss.append(p_loss_value)
+        value_loss.append(v_loss_value)
+        total_loss.append(total_loss_value)
+
+        reward_value = step.get("episode_reward")
+        avg_reward_value = step.get("average_reward")
+        lr_value = step.get("learning_rate")
+        hard_value = step.get("hard_violations")
+        soft_value = step.get("soft_violations")
+        completion_value = step.get("completion_rate")
+        reward_per_step_value = step.get("reward_per_step")
+
+        episode_reward.append(float(reward_value) if isinstance(reward_value, (int, float)) else None)
+        average_reward.append(float(avg_reward_value) if isinstance(avg_reward_value, (int, float)) else None)
+        learning_rate.append(float(lr_value) if isinstance(lr_value, (int, float)) else None)
+        hard_violations.append(int(hard_value) if isinstance(hard_value, (int, float)) else None)
+        soft_violations.append(int(soft_value) if isinstance(soft_value, (int, float)) else None)
+        completion_rate.append(float(completion_value) if isinstance(completion_value, (int, float)) else None)
+        reward_per_step.append(
+            float(reward_per_step_value)
+            if isinstance(reward_per_step_value, (int, float))
+            else None
+        )
+
+    history = {
+        "iteration": iteration,
+        "policy_loss": policy_loss,
+        "value_loss": value_loss,
+        "total_loss": total_loss,
+        "episode_reward": episode_reward,
+        "average_reward": average_reward,
+        "reward_per_step": reward_per_step,
+        "learning_rate": learning_rate,
+        "hard_violations": hard_violations,
+        "soft_violations": soft_violations,
+        "completion_rate": completion_rate,
+    }
+    history.update(_derive_success_series(hard_violations))
+    return history
+
+
+def _build_history_from_metrics_payload(payload: Dict[str, Any]) -> Dict[str, List[Any]]:
+    if not isinstance(payload, dict):
+        return {}
+
+    if isinstance(payload.get("steps"), list):
+        from_steps = _build_history_from_steps_payload(payload)
+        if from_steps:
+            return from_steps
+
+    if isinstance(payload.get("metrics"), dict):
+        return _build_history_from_legacy(payload)
+
+    return {}
 
 
 def _build_history_from_evaluation_report(report_data: Dict[str, Any]) -> Dict[str, List[Any]]:
@@ -363,6 +532,7 @@ def _build_history_from_evaluation_report(report_data: Dict[str, Any]) -> Dict[s
         "total_loss": [None] * total_points,
         "episode_reward": rewards,
         "average_reward": average_reward,
+        "reward_per_step": [None] * total_points,
         "learning_rate": [None] * total_points,
         "hard_violations": hard_violations,
         "soft_violations": soft_violations,
@@ -372,35 +542,29 @@ def _build_history_from_evaluation_report(report_data: Dict[str, Any]) -> Dict[s
     }
 
 
-def _get_history_by_model_version(model_version: str) -> Dict[str, Any]:
+def _get_history_by_model_version(model_version: str) -> Tuple[Dict[str, Any], Optional[str]]:
     model_dir = _resolve_model_dir()
-    active_model = get_active_model_name(model_dir)
     selected_model = model_version if model_version.endswith(".pt") else f"{model_version}.pt"
 
-    collector = get_metrics_collector()
-
-    # Active model may have live collector data.
-    if selected_model == active_model:
-        live_history = collector.get_metrics_history(metric_names=None, last_n=None)
-        has_live_data = any(isinstance(v, list) and len(v) > 0 for v in live_history.values())
-        if has_live_data:
-            return live_history
+    metrics_path = _resolve_model_metrics_file(selected_model, model_dir=model_dir)
+    if metrics_path:
+        try:
+            with open(metrics_path, "r", encoding="utf-8") as f:
+                metrics_payload = json.load(f)
+            history = _build_history_from_metrics_payload(metrics_payload)
+            has_history = any(isinstance(v, list) and len(v) > 0 for v in history.values())
+            if has_history:
+                return history, str(metrics_path)
+        except Exception as e:
+            logger.warning(f"Failed to read model metrics from {metrics_path}: {e}")
 
     report_path = _resolve_evaluation_report(selected_model)
     if report_path:
         with open(report_path, "r", encoding="utf-8") as f:
             report_data = json.load(f)
-        return _build_history_from_evaluation_report(report_data)
+        return _build_history_from_evaluation_report(report_data), str(report_path)
 
-    if selected_model == active_model:
-        legacy_data = _load_legacy_training_metrics()
-        if legacy_data:
-            return _build_history_from_legacy(legacy_data)
-
-    raise HTTPException(
-        status_code=404,
-        detail=f"Історію метрик для моделі '{selected_model}' не знайдено",
-    )
+    return _empty_history_payload(), None
 
 
 def _derive_success_series(hard_violations: List[Any]) -> Dict[str, List[Any]]:
@@ -528,6 +692,18 @@ class ModelTrainingRequest(BaseModel):
     iterations_mode: str = Field("total", description="total | per-case")
 
 
+class ModelAdaptRequest(BaseModel):
+    source_model_version: str = Field(..., description="Selected model the user attempted to use")
+    iterations: int = Field(400, ge=50, le=50000)
+    count: int = Field(100, ge=20, le=5000)
+    seed: int = Field(42)
+    train_ratio: float = Field(0.8, gt=0.0, lt=1.0)
+    dataset_name: str = Field("dataset_compatible_100")
+    device: str = Field("cpu")
+    promote: bool = Field(False)
+    iterations_mode: str = Field("total", description="total | per-case")
+
+
 def _resolve_dataset_selection(payload: ModelTrainingRequest) -> Dict[str, Any]:
     mode = (payload.dataset_size_mode or "").strip().lower()
     if mode not in {"100", "1000", "compatible_100", "compatible_1000", "custom"}:
@@ -570,6 +746,95 @@ def _resolve_dataset_selection(payload: ModelTrainingRequest) -> Dict[str, Any]:
     }
 
 
+def _safe_len_list(value: Any) -> int:
+    return len(value) if isinstance(value, list) else 0
+
+
+def _validate_compatible_dataset_manifest(manifest_path: Path, root: Path) -> None:
+    """Validate that compatible datasets are actually DB-reference compatible."""
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as file:
+            manifest = json.load(file)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to read compatible manifest: {exc}")
+
+    metadata = manifest.get("metadata") if isinstance(manifest, dict) else None
+    metadata = metadata if isinstance(metadata, dict) else {}
+    template = metadata.get("compatible_template")
+
+    expected_template = "data/db_reference_case.json"
+    if template != expected_template:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Compatible dataset is stale or not DB-aligned. "
+                f"Expected metadata.compatible_template='{expected_template}', got '{template}'. "
+                "Regenerate with backend/generate_compatible_datasets.py using --reference-case data/db_reference_case.json "
+                "or run backend/auto_compatible_pipeline.py."
+            ),
+        )
+
+    train_entries = manifest.get("train") if isinstance(manifest, dict) else []
+    test_entries = manifest.get("test") if isinstance(manifest, dict) else []
+    entries = []
+    if isinstance(train_entries, list):
+        entries.extend(train_entries)
+    if isinstance(test_entries, list):
+        entries.extend(test_entries)
+
+    if not entries:
+        raise HTTPException(status_code=400, detail="Compatible dataset manifest has no train/test entries")
+
+    signatures = set()
+    sampled = 0
+    max_samples = min(60, len(entries))
+
+    for entry in entries[:max_samples]:
+        if not isinstance(entry, dict):
+            continue
+        rel_path = entry.get("path")
+        if not isinstance(rel_path, str) or not rel_path.strip():
+            continue
+
+        case_path = (root / rel_path).resolve()
+        if not case_path.exists():
+            continue
+
+        try:
+            with open(case_path, "r", encoding="utf-8") as case_file:
+                payload = json.load(case_file)
+        except Exception:
+            continue
+
+        constraints = payload.get("constraints") if isinstance(payload, dict) else {}
+        constraints = constraints if isinstance(constraints, dict) else {}
+
+        signature = (
+            _safe_len_list(payload.get("groups")),
+            _safe_len_list(payload.get("teachers")),
+            _safe_len_list(payload.get("classrooms")),
+            _safe_len_list(payload.get("lessons_pool")),
+            _safe_len_list(payload.get("timeslots")),
+            int(constraints.get("max_daily_lessons", 0) or 0),
+        )
+        signatures.add(signature)
+        sampled += 1
+
+    if sampled == 0:
+        raise HTTPException(status_code=400, detail="Compatible dataset validation failed: no readable cases")
+
+    if len(signatures) > 1:
+        preview = ", ".join(str(sig) for sig in list(signatures)[:3])
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Compatible dataset has mixed structural profiles (likely mixed state dimensions). "
+                f"Sampled signatures: {preview}. "
+                "Regenerate dataset from a fresh DB reference case and retrain."
+            ),
+        )
+
+
 def _start_model_training_job(payload: ModelTrainingRequest) -> Dict[str, Any]:
     from dataset_generator import generate_dataset_package
 
@@ -591,6 +856,7 @@ def _start_model_training_job(payload: ModelTrainingRequest) -> Dict[str, Any]:
                     "Generate it first with backend/generate_compatible_datasets.py or switch dataset mode."
                 ),
             )
+        _validate_compatible_dataset_manifest(manifest_path, root)
     elif payload.regenerate_dataset or not manifest_path.exists():
         generate_dataset_package(
             workspace_root=root,
@@ -826,6 +1092,163 @@ def _extract_dataset_100_preset_progress(log_path: Optional[str], status: str) -
     }
 
 
+def _extract_model_version_from_text(text: str) -> Optional[str]:
+    matches = re.findall(r"actor_critic_\d{8}_\d{6}\.pt", text or "")
+    return matches[-1] if matches else None
+
+
+def _start_model_adaptation_job(payload: ModelAdaptRequest) -> Dict[str, Any]:
+    root = _workspace_root()
+
+    iterations_mode = (payload.iterations_mode or "total").strip().lower()
+    if iterations_mode not in {"total", "per-case"}:
+        raise HTTPException(status_code=400, detail="iterations_mode must be one of: total, per-case")
+
+    dataset_name = (payload.dataset_name or "").strip()
+    if not dataset_name:
+        raise HTTPException(status_code=400, detail="dataset_name must not be empty")
+
+    job_id = uuid4().hex
+    logs_dir = root / "backend" / "training_metrics" / "preset_runs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    log_path = logs_dir / f"model_adaptation_{job_id}.log"
+
+    command: List[str] = [
+        sys.executable,
+        "backend/auto_compatible_pipeline.py",
+        "--dataset-name",
+        dataset_name,
+        "--count",
+        str(payload.count),
+        "--seed",
+        str(payload.seed),
+        "--train-ratio",
+        str(payload.train_ratio),
+        "--iterations",
+        str(payload.iterations),
+        "--iterations-mode",
+        iterations_mode,
+        "--device",
+        payload.device,
+    ]
+    if payload.promote:
+        command.append("--promote")
+
+    log_file = open(log_path, "a", encoding="utf-8")
+    process = subprocess.Popen(
+        command,
+        cwd=str(root),
+        stdout=log_file,
+        stderr=log_file,
+        text=True,
+    )
+
+    _adapt_jobs[job_id] = {
+        "process": process,
+        "log_file": log_file,
+        "log_path": str(log_path),
+        "created_at": datetime.now().isoformat(),
+        "command": command,
+        "source_model_version": payload.source_model_version,
+        "dataset_name": dataset_name,
+        "count": payload.count,
+        "iterations": payload.iterations,
+        "iterations_mode": iterations_mode,
+        "seed": payload.seed,
+        "train_ratio": payload.train_ratio,
+        "device": payload.device,
+        "promote": payload.promote,
+    }
+
+    return {
+        "job_id": job_id,
+        "status": "running",
+        "pid": process.pid,
+        "source_model_version": payload.source_model_version,
+        "dataset_name": dataset_name,
+        "count": payload.count,
+        "iterations": payload.iterations,
+        "iterations_mode": iterations_mode,
+        "seed": payload.seed,
+        "train_ratio": payload.train_ratio,
+        "device": payload.device,
+        "promote": payload.promote,
+        "command": command,
+        "log_path": str(log_path),
+    }
+
+
+def _read_adaptation_job(job_id: str) -> Dict[str, Any]:
+    job = _adapt_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Adaptation job not found")
+
+    process: subprocess.Popen[str] = job["process"]
+    return_code = process.poll()
+    status = "running" if return_code is None else ("completed" if return_code == 0 else "failed")
+    if job.get("stopped"):
+        status = "stopped"
+
+    if return_code is not None:
+        log_file = job.get("log_file")
+        if log_file and not log_file.closed:
+            log_file.close()
+
+    progress = _extract_dataset_100_preset_progress(job.get("log_path"), status)
+    log_tail = _read_log_tail_text(job.get("log_path")) if job.get("log_path") else ""
+    model_version = _extract_model_version_from_text(log_tail)
+    if status == "completed" and not model_version:
+        try:
+            model_version = get_active_model_name(_resolve_model_dir())
+        except Exception:
+            model_version = None
+
+    return {
+        "job_id": job_id,
+        "status": status,
+        "pid": process.pid,
+        "return_code": return_code,
+        "created_at": job.get("created_at"),
+        "stopped_at": job.get("stopped_at"),
+        "source_model_version": job.get("source_model_version"),
+        "dataset_name": job.get("dataset_name"),
+        "count": job.get("count"),
+        "iterations": job.get("iterations"),
+        "iterations_mode": job.get("iterations_mode"),
+        "seed": job.get("seed"),
+        "train_ratio": job.get("train_ratio"),
+        "device": job.get("device"),
+        "promote": job.get("promote"),
+        "command": job.get("command"),
+        "log_path": job.get("log_path"),
+        "model_version": model_version,
+        **progress,
+    }
+
+
+def _stop_adaptation_job(job_id: str) -> Dict[str, Any]:
+    job = _adapt_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Adaptation job not found")
+
+    process: subprocess.Popen[str] = job["process"]
+    if process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=3)
+
+    log_file = job.get("log_file")
+    if log_file and not log_file.closed:
+        log_file.close()
+
+    job["stopped"] = True
+    job["stopped_at"] = datetime.now().isoformat()
+    return _read_adaptation_job(job_id)
+
+
 @router.post("/presets/dataset-100/start")
 async def start_dataset_100_preset(payload: Dataset100PresetRequest):
     """One-call preset: generate dataset-100 (optional) and launch train/eval pipeline."""
@@ -864,6 +1287,37 @@ async def get_model_training_status(job_id: str):
 async def stop_model_training_job(job_id: str):
     """Явна зупинка тренувального job створення моделі."""
     return _stop_training_job(job_id)
+
+
+@router.post("/models/adapt")
+async def start_model_adaptation(payload: ModelAdaptRequest):
+    """Запустити адаптацію (перенавчання) моделі під поточну розмірність середовища."""
+    try:
+        return _start_model_adaptation_job(payload)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to start model adaptation: {e}")
+
+
+@router.get("/models/adapt/jobs")
+async def list_model_adaptation_jobs():
+    """Список усіх job-ів адаптації моделі."""
+    return {
+        "jobs": [_read_adaptation_job(job_id) for job_id in list(_adapt_jobs.keys())]
+    }
+
+
+@router.get("/models/adapt/status/{job_id}")
+async def get_model_adaptation_status(job_id: str):
+    """Статус job адаптації моделі."""
+    return _read_adaptation_job(job_id)
+
+
+@router.post("/models/adapt/stop/{job_id}")
+async def stop_model_adaptation(job_id: str):
+    """Явна зупинка job адаптації моделі."""
+    return _stop_adaptation_job(job_id)
 
 
 @router.get("/presets/dataset-100/jobs")
@@ -918,8 +1372,10 @@ async def get_metrics_history(
     else:
         metric_names = [m.strip() for m in metrics.split(",")]
 
+    source_file: Optional[str] = None
+
     if model_version:
-        history = _get_history_by_model_version(model_version)
+        history, source_file = _get_history_by_model_version(model_version)
     else:
         collector = get_metrics_collector()
         history = collector.get_metrics_history(metric_names=metric_names, last_n=last_n)
@@ -951,9 +1407,17 @@ async def get_metrics_history(
             for key, value in history.items()
             if key in metric_names or key == "iteration"
         }
-    
+
     if model_version:
-        history["model_version"] = model_version
+        normalized_model = _normalize_model_name(model_version)
+        has_model_data = any(
+            isinstance(values, list) and len(values) > 0
+            for key, values in history.items()
+            if key != "model_version"
+        )
+        history["model_version"] = normalized_model
+        history["data_available"] = has_model_data
+        history["source_file"] = source_file
 
     return JSONResponse(content=history)
 
@@ -1161,6 +1625,18 @@ async def get_model_versions():
     }
 
 
+def _extract_timestamp_from_model_name(model_name: str) -> Optional[str]:
+    """Extract timestamp from model filename."""
+    match = re.search(r'(\d{8}_\d{6})', model_name)
+    return match.group(1) if match else None
+
+
+def _map_model_name_to_metrics_file(model_name: str) -> Optional[Path]:
+    """Map model name to metrics JSON file using robust model/run resolution."""
+    normalized = model_name if model_name.endswith(".pt") else f"{model_name}.pt"
+    return _resolve_model_metrics_file(normalized, model_dir=_resolve_model_dir())
+
+
 @router.get("/models/active")
 async def get_active_model():
     """Отримати активну версію моделі для генерації."""
@@ -1192,6 +1668,58 @@ async def activate_model(request: ActivateModelRequest):
         "model_dir": str(model_dir),
         **payload,
     }
+
+
+@router.get("/models/{model_name}/metrics")
+async def get_model_metrics(model_name: str):
+    """Get complete training history for a specific model.
+    
+    Retrieves loss curves and metrics from saved training files.
+    Returns empty arrays if no metrics file is found for the model.
+    """
+    # Normalize model name
+    if not model_name.endswith(".pt"):
+        model_name = f"{model_name}.pt"
+    
+    # Try to find metrics file
+    metrics_file = _map_model_name_to_metrics_file(model_name)
+    
+    # Default empty response structure
+    default_response = {
+        "iteration": [],
+        "policy_loss": [],
+        "value_loss": [],
+        "total_loss": [],
+        "episode_reward": [],
+        "average_reward": [],
+        "reward_per_step": [],
+        "learning_rate": [],
+        "hard_violations": [],
+        "soft_violations": [],
+        "completion_rate": [],
+        "success_rate": [],
+    }
+    
+    if not metrics_file or not metrics_file.exists():
+        logger.warning(f"Metrics file not found for model: {model_name}")
+        return default_response
+    
+    try:
+        with open(metrics_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        history = _build_history_from_metrics_payload(data)
+        has_history = any(isinstance(v, list) and len(v) > 0 for v in history.values())
+        if not has_history:
+            return default_response
+
+        return {
+            **default_response,
+            **history,
+        }
+    except Exception as e:
+        logger.error(f"Failed to read metrics file {metrics_file}: {e}")
+        return default_response
 
 
 # === Visualizations Endpoints ===
@@ -1471,6 +1999,7 @@ async def get_training_status():
 @router.get("/best-schedule-preview")
 async def get_best_schedule_preview(
     max_rows: int = Query(20, ge=5, le=100, description="Максимальна кількість рядків у mini-table"),
+    model_version: Optional[str] = Query(None, description="Назва моделі для preview (наприклад actor_critic_20260327_234422.pt)"),
 ):
     """
     Отримати preview найкращого знайденого розкладу для dashboard.
@@ -1480,11 +2009,17 @@ async def get_best_schedule_preview(
     - mini table (короткий список занять)
     - метадані джерела
     """
-    latest_file = _read_latest_schedule_file()
+    latest_file = _read_latest_schedule_file(model_version=model_version)
     if not latest_file:
+        normalized_model = _normalize_model_name(model_version) if model_version else None
+        message = "No saved schedules found"
+        if normalized_model:
+            message = f"No saved schedule preview for model '{normalized_model}'"
         return {
             "available": False,
-            "message": "No saved schedules found",
+            "data_available": False,
+            "message": message,
+            "source_model_version": normalized_model,
             "heatmap": [],
             "table": [],
         }
@@ -1538,14 +2073,17 @@ async def get_best_schedule_preview(
 
         return {
             "available": len(classes) > 0,
+            "data_available": len(classes) > 0,
             "source_file": latest_file.name,
             "updated_at": datetime.fromtimestamp(latest_file.stat().st_mtime).isoformat(),
+            "source_model_version": meta.get("model_version") if isinstance(meta, dict) else None,
             "meta": {
                 "generation_id": meta.get("generation_id"),
                 "best_reward": meta.get("best_reward"),
                 "hard_violations": meta.get("hard_violations"),
                 "soft_violations": meta.get("soft_violations"),
                 "classes_count": len(classes),
+                "model_version": meta.get("model_version") if isinstance(meta, dict) else None,
             },
             "heatmap": heatmap,
             "table": table_rows,
@@ -1554,8 +2092,10 @@ async def get_best_schedule_preview(
         logger.warning("Failed to build schedule preview from %s: %s", latest_file, e)
         return {
             "available": False,
+            "data_available": False,
             "message": f"Schedule preview temporarily unavailable: {e}",
             "source_file": latest_file.name,
+            "source_model_version": _normalize_model_name(model_version) if model_version else None,
             "heatmap": [],
             "table": [],
         }

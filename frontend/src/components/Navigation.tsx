@@ -39,10 +39,10 @@ const menuSections = [
         badge: null,
       },
       {
-        text: "Індивідуальна генерація",
-        icon: <PsychologyIcon />,
-        path: "/individual-generation",
-        badge: "NEW",
+        text: "Створення і навчання моделі",
+        icon: <TimelineIcon />,
+        path: "/training-metrics",
+        badge: "LIVE",
       },
       {
         text: "Конфлікти",
@@ -74,17 +74,6 @@ const menuSections = [
         icon: <AccessTimeIcon />,
         path: "/timeslots",
         badge: null,
-      },
-    ],
-  },
-  {
-    title: "Сценарії",
-    items: [
-      {
-        text: "Навчання моделі",
-        icon: <TimelineIcon />,
-        path: "/training-metrics",
-        badge: "LIVE",
       },
     ],
   },

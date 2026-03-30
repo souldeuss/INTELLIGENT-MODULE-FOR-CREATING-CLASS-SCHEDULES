@@ -207,6 +207,7 @@ class PPOTrainerV2:
         hard_violations_history = []
         soft_violations_history = []
         completion_rates = []
+        normalized_reward_per_step = []
         model_scores = []
         actor_losses = []
         critic_losses = []
@@ -238,6 +239,8 @@ class PPOTrainerV2:
 
             # Збір метрик
             episode_reward = sum(rewards.cpu().numpy())
+            trajectory_steps = max(int(final_info.get("trajectory_steps", len(rewards))), 1)
+            reward_per_step = float(episode_reward) / float(trajectory_steps)
             completion_rate = final_info.get("completion_rate", 0)
             hard_violations = final_info.get("hard_violations", 0)
             soft_violations = final_info.get("soft_violations", 0)
@@ -250,6 +253,7 @@ class PPOTrainerV2:
             )
             
             episode_rewards.append(episode_reward)
+            normalized_reward_per_step.append(reward_per_step)
             hard_violations_history.append(hard_violations)
             soft_violations_history.append(soft_violations)
             completion_rates.append(completion_rate)
@@ -292,39 +296,41 @@ class PPOTrainerV2:
                     f"Hard: {final_info.get('hard_violations', 0)}"
                 )
 
+        # Конвертуємо numpy масиви та обробляємо NaN/Inf для фінальної статистики
+        def clean_value(val):
+            """Конвертує значення для JSON."""
+            if isinstance(val, (np.integer, np.floating)):
+                val = float(val)
+            if isinstance(val, float):
+                if np.isnan(val) or np.isinf(val):
+                    return 0.0
+            return val
+        
         # Фінальна статистика з історією метрик
         final_stats = {
-            "best_reward": best_reward,
-            "best_completion": best_completion,
-            "best_model_score": best_model_score,
+            "best_reward": clean_value(best_reward),
+            "best_completion": clean_value(best_completion),
+            "best_model_score": clean_value(best_model_score),
             "total_iterations": len(episode_rewards),
             "selection_strategy": "combined_score",
             "score_weights": self.score_weights,
             "metrics": {
-                "rewards": episode_rewards,
-                "hard_violations": hard_violations_history,
-                "soft_violations": soft_violations_history,
-                "completion_rates": completion_rates,
-                "model_scores": model_scores,
-                "actor_losses": actor_losses,
-                "critic_losses": critic_losses,
+                "rewards": [clean_value(x) for x in episode_rewards],
+                "reward_per_step": [clean_value(x) for x in normalized_reward_per_step],
+                "hard_violations": [int(x) for x in hard_violations_history],
+                "soft_violations": [int(x) for x in soft_violations_history],
+                "completion_rates": [clean_value(x) for x in completion_rates],
+                "model_scores": [clean_value(x) for x in model_scores],
+                "actor_losses": [clean_value(x) for x in actor_losses],
+                "critic_losses": [clean_value(x) for x in critic_losses],
             }
         }
         
         # Зберігаємо метрики у файл для аналізу
-        try:
-            # Конвертуємо numpy масиви та обробляємо NaN/Inf
-            def clean_value(val):
-                """Конвертує значення для JSON."""
-                if isinstance(val, (np.integer, np.floating)):
-                    val = float(val)
-                if isinstance(val, float):
-                    if np.isnan(val) or np.isinf(val):
-                        return 0.0
-                return val
-            
+        try:            
             clean_metrics = {
                 'rewards': [clean_value(x) for x in episode_rewards],
+                'reward_per_step': [clean_value(x) for x in normalized_reward_per_step],
                 'hard_violations': [int(x) for x in hard_violations_history],
                 'soft_violations': [int(x) for x in soft_violations_history],
                 'completion_rates': [clean_value(x) for x in completion_rates],
@@ -405,6 +411,7 @@ class PPOTrainerV2:
         final_info = {
             "completion_rate": len(self.env.assignments_list) / max(self.env.total_classes_to_schedule, 1),
             "hard_violations": self.env._count_hard_violations(),
+            "trajectory_steps": len(states),
             "remaining": len(self.env.pending_courses)
         }
 

@@ -22,6 +22,7 @@ import {
   Tooltip,
   Badge,
   CircularProgress,
+  Alert,
   useTheme,
 } from "@mui/material";
 import {
@@ -61,8 +62,8 @@ import {
   ResponsiveContainer,
   Legend,
 } from "recharts";
+import { useNavigate } from "react-router-dom";
 import { statsService, aiService, getSchedules } from "../services/api";
-import AIControlPanel from "./AIControlPanel";
 import ConflictCenter from "./ConflictCenter";
 import DataGenerator from "./DataGenerator";
 
@@ -103,13 +104,13 @@ const CHART_COLORS = [
 
 const ModernDashboard: React.FC = () => {
   const theme = useTheme();
+  const navigate = useNavigate();
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [scheduleScore, setScheduleScore] = useState<any>(null);
   const [recentSchedules, setRecentSchedules] = useState<ScheduleVersion[]>([]);
   const [recentActivity, setRecentActivity] = useState<Activity[]>([]);
   const [trainingHistory, setTrainingHistory] = useState<any[]>([]);
-  const [showAIPanel, setShowAIPanel] = useState(false);
 
   useEffect(() => {
     loadDashboardData();
@@ -394,10 +395,10 @@ const ModernDashboard: React.FC = () => {
               variant="contained"
               fullWidth
               startIcon={<PlayIcon />}
-              onClick={() => setShowAIPanel(true)}
+              onClick={() => navigate("/timetable")}
               sx={{ py: 2 }}
             >
-              Генерувати
+              До розкладу
             </Button>
           </Grid>
           <Grid item xs={6}>
@@ -405,6 +406,7 @@ const ModernDashboard: React.FC = () => {
               variant="outlined"
               fullWidth
               startIcon={<CalendarIcon />}
+              onClick={() => navigate("/timetable")}
               sx={{ py: 2 }}
             >
               Переглянути
@@ -415,6 +417,7 @@ const ModernDashboard: React.FC = () => {
               variant="outlined"
               fullWidth
               startIcon={<AssessmentIcon />}
+              onClick={() => navigate("/training-metrics")}
               sx={{ py: 2 }}
             >
               Аналітика
@@ -580,42 +583,15 @@ const ModernDashboard: React.FC = () => {
         {/* Sidebar */}
         <Grid item xs={12} md={4}>
           <Stack spacing={3}>
-            {/* AI Control (Compact) */}
-            <AIControlPanel compact onGenerationComplete={loadDashboardData} />
+            <Alert severity="info">
+              Генерацію розкладу перенесено на сторінку "Розклад", а запуск навчання моделі доступний у вкладці "Створення і навчання моделі".
+            </Alert>
 
             {/* Recent Schedules */}
             <RecentSchedules />
           </Stack>
         </Grid>
       </Grid>
-
-      {/* AI Panel Dialog */}
-      {showAIPanel && (
-        <Box
-          sx={{
-            position: "fixed",
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            bgcolor: "rgba(0,0,0,0.5)",
-            zIndex: 1000,
-            display: "flex",
-            justifyContent: "center",
-            alignItems: "center",
-          }}
-          onClick={() => setShowAIPanel(false)}
-        >
-          <Box onClick={(e) => e.stopPropagation()}>
-            <AIControlPanel
-              onGenerationComplete={() => {
-                loadDashboardData();
-                setShowAIPanel(false);
-              }}
-            />
-          </Box>
-        </Box>
-      )}
     </Box>
   );
 };

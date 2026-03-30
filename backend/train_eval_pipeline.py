@@ -324,6 +324,29 @@ def main() -> None:
     )
 
     train_reports: List[Dict[str, float]] = []
+    aggregated_train_metrics: Dict[str, List[Any]] = {
+        "rewards": [],
+        "reward_per_step": [],
+        "hard_violations": [],
+        "soft_violations": [],
+        "completion_rates": [],
+        "model_scores": [],
+        "actor_losses": [],
+        "critic_losses": [],
+    }
+    
+    def _clean_numpy_value(val: Any) -> Any:
+        """Convert numpy scalars to Python native types for JSON serialization."""
+        try:
+            import numpy as np
+            if isinstance(val, (np.integer, np.floating)):
+                return float(val) if isinstance(val, np.floating) else int(val)
+            if isinstance(val, (np.ndarray,)):
+                return val.tolist()
+        except ImportError:
+            pass
+        return val
+    
     for case_idx, case in enumerate(train_files):
         case_num = case_idx + 1
         case_iterations = train_iterations_by_case[case_idx] if case_idx < len(train_iterations_by_case) else args.iterations
@@ -342,6 +365,15 @@ def main() -> None:
             score_weights=score_weights,
         )
         _, stats = trainer.train(num_iterations=case_iterations)
+        stats_metrics = stats.get("metrics") if isinstance(stats, dict) else None
+        if isinstance(stats_metrics, dict):
+            for key in aggregated_train_metrics:
+                values = stats_metrics.get(key)
+                if isinstance(values, list):
+                    # Clean numpy scalars before aggregating
+                    cleaned_values = [_clean_numpy_value(v) for v in values]
+                    aggregated_train_metrics[key].extend(cleaned_values)
+
         train_reports.append(
             {
                 "case": case,
@@ -458,6 +490,25 @@ def main() -> None:
 
     reports_dir = root / "backend" / "saved_models"
     reports_dir.mkdir(parents=True, exist_ok=True)
+
+    # Persist versioned metrics so UI can render loss curves per selected model.
+    versioned_metrics_path = model_dir / f"training_metrics_{run_id}.json"
+    with open(versioned_metrics_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "timestamp": datetime.now().isoformat(),
+                "run_id": run_id,
+                "model_version": versioned_name,
+                "iterations": int(len(aggregated_train_metrics["rewards"])),
+                "selection_strategy": "combined_score",
+                "score_weights": score_weights,
+                "metrics": aggregated_train_metrics,
+            },
+            f,
+            indent=2,
+            ensure_ascii=False,
+        )
+
     report_path = reports_dir / f"evaluation_report_{run_id}.json"
     with open(report_path, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2, ensure_ascii=False)
