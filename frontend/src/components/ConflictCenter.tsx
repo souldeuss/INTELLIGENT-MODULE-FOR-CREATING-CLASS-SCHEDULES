@@ -159,7 +159,7 @@ const ConflictCenter: React.FC<ConflictCenterProps> = ({
 
         setSnackbar({
           open: true,
-          message: `Заняття переміщено на ${targetSlot.day_name}, ${targetSlot.period_number} пара`,
+          message: `Заняття переміщено на ${targetSlot.day_name}, ${targetSlot.period_number} урок`,
           severity: "success",
         });
 

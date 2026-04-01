@@ -26,6 +26,7 @@ import {
   MenuItem,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
+import DownloadIcon from "@mui/icons-material/Download";
 import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
 import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
@@ -36,6 +37,7 @@ import {
   createClassroom,
   updateClassroom,
   deleteClassroom,
+  exportClassroomsCsv,
 } from "../services/api";
 
 interface Classroom {
@@ -49,6 +51,23 @@ interface Classroom {
   has_computers: boolean;
 }
 
+const getFilenameFromDisposition = (
+  contentDisposition: string | undefined,
+  fallbackName: string
+) => {
+  if (!contentDisposition) {
+    return fallbackName;
+  }
+
+  const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    return decodeURIComponent(utf8Match[1]);
+  }
+
+  const basicMatch = contentDisposition.match(/filename="?([^";]+)"?/i);
+  return basicMatch?.[1] || fallbackName;
+};
+
 const CLASSROOM_TYPES = [
   { value: "general", label: "Загальна" },
   { value: "lecture", label: "Лекційна" },
@@ -59,6 +78,7 @@ const CLASSROOM_TYPES = [
 
 const ClassroomManagement: React.FC = () => {
   const [classrooms, setClassrooms] = useState<Classroom[]>([]);
+  const [exporting, setExporting] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingClassroom, setEditingClassroom] = useState<Classroom | null>(
     null
@@ -188,6 +208,39 @@ const ClassroomManagement: React.FC = () => {
     return CLASSROOM_TYPES.find((t) => t.value === type)?.label || type;
   };
 
+  const handleExportCsv = async () => {
+    try {
+      setExporting(true);
+      const response = await exportClassroomsCsv();
+
+      const fallbackName = `classrooms_${new Date().toISOString().slice(0, 10)}.csv`;
+      const filename = getFilenameFromDisposition(
+        response.headers["content-disposition"],
+        fallbackName
+      );
+
+      const blob =
+        response.data instanceof Blob
+          ? response.data
+          : new Blob([response.data], { type: "text/csv;charset=utf-8;" });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.click();
+      window.URL.revokeObjectURL(url);
+
+      showSnackbar("CSV експорт аудиторій виконано", "success");
+    } catch (error: any) {
+      showSnackbar(
+        error.response?.data?.detail || "Помилка експорту аудиторій",
+        "error"
+      );
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <Box sx={{ p: 3 }}>
       <Box
@@ -208,6 +261,14 @@ const ClassroomManagement: React.FC = () => {
           </Typography>
         </Box>
         <Stack direction="row" spacing={2}>
+          <Button
+            variant="outlined"
+            startIcon={<DownloadIcon />}
+            onClick={handleExportCsv}
+            disabled={exporting}
+          >
+            {exporting ? "Експорт..." : "Експорт CSV"}
+          </Button>
           {classrooms.length > 0 && (
             <Button
               variant="outlined"

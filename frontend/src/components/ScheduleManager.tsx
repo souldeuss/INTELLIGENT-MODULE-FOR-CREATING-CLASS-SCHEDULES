@@ -52,10 +52,28 @@ interface ScheduleFile {
   } | null;
 }
 
+const getFilenameFromDisposition = (
+  contentDisposition: string | undefined,
+  fallbackName: string
+) => {
+  if (!contentDisposition) {
+    return fallbackName;
+  }
+
+  const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    return decodeURIComponent(utf8Match[1]);
+  }
+
+  const basicMatch = contentDisposition.match(/filename="?([^";]+)"?/i);
+  return basicMatch?.[1] || fallbackName;
+};
+
 const ScheduleManager: React.FC = () => {
   const [files, setFiles] = useState<ScheduleFile[]>([]);
   const [loading, setLoading] = useState(false);
   const [exportLoading, setExportLoading] = useState(false);
+  const [lessonsExportLoading, setLessonsExportLoading] = useState(false);
   const [importLoading, setImportLoading] = useState<string | null>(null);
 
   const [snackbar, setSnackbar] = useState<{
@@ -138,6 +156,44 @@ const ScheduleManager: React.FC = () => {
       });
     } finally {
       setExportLoading(false);
+    }
+  };
+
+  const handleExportLessonsCsv = async () => {
+    setLessonsExportLoading(true);
+    try {
+      const response = await scheduleService.exportLessonsCsv();
+      const fallbackName = `lessons_${new Date().toISOString().slice(0, 10)}.csv`;
+      const filename = getFilenameFromDisposition(
+        response.headers["content-disposition"],
+        fallbackName
+      );
+
+      const blob =
+        response.data instanceof Blob
+          ? response.data
+          : new Blob([response.data], { type: "text/csv;charset=utf-8;" });
+
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      window.URL.revokeObjectURL(url);
+
+      setSnackbar({
+        open: true,
+        message: "Уроки експортовано у CSV за шаблоном",
+        severity: "success",
+      });
+    } catch (error) {
+      setSnackbar({
+        open: true,
+        message: "Помилка експорту уроків у CSV",
+        severity: "error",
+      });
+    } finally {
+      setLessonsExportLoading(false);
     }
   };
 
@@ -248,6 +304,16 @@ const ScheduleManager: React.FC = () => {
             disabled={loading}
           >
             Оновити
+          </Button>
+          <Button
+            variant="outlined"
+            startIcon={
+              lessonsExportLoading ? <CircularProgress size={16} /> : <DownloadIcon />
+            }
+            onClick={handleExportLessonsCsv}
+            disabled={lessonsExportLoading}
+          >
+            Експорт уроків CSV
           </Button>
           <Button
             variant="contained"

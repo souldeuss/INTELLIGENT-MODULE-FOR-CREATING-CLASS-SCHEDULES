@@ -54,6 +54,21 @@ def _load_json(path: Path) -> Dict:
         return json.load(f)
 
 
+def _resolve_database_url(workspace_root: Path, db_path_arg: Optional[str]) -> str:
+    if db_path_arg:
+        db_path = Path(db_path_arg)
+        if not db_path.is_absolute():
+            db_path = workspace_root / db_path
+        return f"sqlite:///{db_path.resolve().as_posix()}"
+
+    runtime_url = os.environ.get("DATABASE_URL", "").strip()
+    if runtime_url:
+        return runtime_url
+
+    default_path = (workspace_root / "backend" / "timetabling.db").resolve()
+    return f"sqlite:///{default_path.as_posix()}"
+
+
 def _sync_and_activate_model(workspace_root: Path, model_name: str) -> None:
     sys.path.insert(0, str(workspace_root / "backend"))
     try:
@@ -126,7 +141,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--workspace-root", default=str(Path(__file__).resolve().parents[1]))
     parser.add_argument("--python", default=sys.executable, help="Python executable for subprocess steps")
 
-    parser.add_argument("--db-path", default="backend/timetabling.db", help="SQLite DB path used by backend")
+    parser.add_argument(
+        "--db-path",
+        default=None,
+        help="Optional SQLite DB path. If omitted, uses DATABASE_URL from runtime env.",
+    )
     parser.add_argument("--reference-case", default="data/db_reference_case.json")
 
     parser.add_argument("--dataset-name", default="dataset_compatible_100")
@@ -147,10 +166,7 @@ def main() -> None:
     workspace_root = Path(args.workspace_root).resolve()
 
     env = os.environ.copy()
-    db_path = Path(args.db_path)
-    if not db_path.is_absolute():
-        db_path = workspace_root / db_path
-    env["DATABASE_URL"] = f"sqlite:///{db_path.as_posix()}"
+    env["DATABASE_URL"] = _resolve_database_url(workspace_root, args.db_path)
 
     root_models = workspace_root / "saved_models"
     before_models = _list_versioned_models(root_models)

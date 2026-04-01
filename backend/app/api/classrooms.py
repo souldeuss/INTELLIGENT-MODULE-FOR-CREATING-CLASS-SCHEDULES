@@ -1,5 +1,10 @@
 """Classrooms API."""
+import csv
+import io
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from typing import List
 
@@ -25,6 +30,28 @@ def create_classroom(classroom: ClassroomCreate, db: Session = Depends(get_db)):
 @router.get("/", response_model=List[ClassroomResponse])
 def list_classrooms(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     return db.query(Classroom).offset(skip).limit(limit).all()
+
+
+@router.get("/export/csv")
+def export_classrooms_csv(db: Session = Depends(get_db)):
+    classrooms = db.query(Classroom).order_by(Classroom.code.asc()).all()
+
+    buffer = io.StringIO()
+    buffer.write("Classroom Name,Short Name\n")
+    writer = csv.writer(buffer, quoting=csv.QUOTE_ALL, lineterminator="\n")
+
+    for classroom in classrooms:
+        writer.writerow([classroom.code, classroom.code])
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"classrooms_{timestamp}.csv"
+    csv_bytes = ("\ufeff" + buffer.getvalue()).encode("utf-8")
+
+    return Response(
+        content=csv_bytes,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/{classroom_id}", response_model=ClassroomResponse)

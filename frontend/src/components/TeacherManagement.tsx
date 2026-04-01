@@ -22,6 +22,7 @@ import {
   CircularProgress,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
+import DownloadIcon from "@mui/icons-material/Download";
 import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
 import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
@@ -30,6 +31,7 @@ import {
   createTeacher,
   updateTeacher,
   deleteTeacher,
+  exportTeachersCsv,
 } from "../services/api";
 
 interface Teacher {
@@ -43,9 +45,27 @@ interface Teacher {
   avoid_late_slots: boolean;
 }
 
+const getFilenameFromDisposition = (
+  contentDisposition: string | undefined,
+  fallbackName: string
+) => {
+  if (!contentDisposition) {
+    return fallbackName;
+  }
+
+  const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    return decodeURIComponent(utf8Match[1]);
+  }
+
+  const basicMatch = contentDisposition.match(/filename="?([^";]+)"?/i);
+  return basicMatch?.[1] || fallbackName;
+};
+
 const TeacherManagement: React.FC = () => {
   const [teachers, setTeachers] = useState<Teacher[]>([]);
   const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [openDialog, setOpenDialog] = useState(false);
   const [editingTeacher, setEditingTeacher] = useState<Teacher | null>(null);
   const [formData, setFormData] = useState({
@@ -160,6 +180,40 @@ const TeacherManagement: React.FC = () => {
     }
   };
 
+  const handleExportCsv = async () => {
+    try {
+      setExporting(true);
+      const response = await exportTeachersCsv();
+
+      const fallbackName = `teachers_${new Date().toISOString().slice(0, 10)}.csv`;
+      const filename = getFilenameFromDisposition(
+        response.headers["content-disposition"],
+        fallbackName
+      );
+
+      const blob =
+        response.data instanceof Blob
+          ? response.data
+          : new Blob([response.data], { type: "text/csv;charset=utf-8;" });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.click();
+      window.URL.revokeObjectURL(url);
+
+      setSnackbar({
+        open: true,
+        message: "CSV експорт викладачів виконано",
+        severity: "success",
+      });
+    } catch (err: any) {
+      setError(err.message || "Не вдалось експортувати викладачів");
+    } finally {
+      setExporting(false);
+    }
+  };
+
   if (loading) {
     return (
       <Box
@@ -190,6 +244,14 @@ const TeacherManagement: React.FC = () => {
           </Typography>
         </Box>
         <Box sx={{ display: "flex", gap: 2 }}>
+          <Button
+            variant="outlined"
+            startIcon={<DownloadIcon />}
+            onClick={handleExportCsv}
+            disabled={exporting}
+          >
+            {exporting ? "Експорт..." : "Експорт CSV"}
+          </Button>
           {teachers.length > 0 && (
             <Button
               variant="outlined"

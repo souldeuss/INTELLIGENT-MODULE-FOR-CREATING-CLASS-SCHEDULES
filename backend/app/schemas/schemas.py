@@ -203,7 +203,7 @@ class ScheduledClassFullResponse(BaseModel):
     
     # Expanded fields for UI
     day_of_week: int  # 0-4 (Mon-Fri)
-    period_number: int  # 1-6
+    period_number: int  # 1-10 (номер уроку)
     start_time: Optional[str] = None
     end_time: Optional[str] = None
     

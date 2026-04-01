@@ -101,12 +101,12 @@ interface ViewFilter {
 
 const DAYS = ["Понеділок", "Вівторок", "Середа", "Четвер", "П'ятниця"];
 const PERIODS = [
-  { number: 1, time: "08:30 - 10:00" },
-  { number: 2, time: "10:15 - 11:45" },
-  { number: 3, time: "12:00 - 13:30" },
-  { number: 4, time: "14:00 - 15:30" },
-  { number: 5, time: "15:45 - 17:15" },
-  { number: 6, time: "17:30 - 19:00" },
+  { number: 1, time: "08:30 - 09:15" },
+  { number: 2, time: "09:25 - 10:10" },
+  { number: 3, time: "10:20 - 11:05" },
+  { number: 4, time: "11:15 - 12:00" },
+  { number: 5, time: "12:10 - 12:55" },
+  { number: 6, time: "13:05 - 13:50" },
 ];
 
 const InteractiveTimetable: React.FC = () => {
@@ -403,19 +403,14 @@ const InteractiveTimetable: React.FC = () => {
     }
 
     try {
+      let modelForGeneration = selectedModelVersion;
       const compatibilityResponse = await checkModelCompatibility(selectedModelVersion);
       const compatibility = compatibilityResponse.data;
       if (!compatibility.compatible) {
-        const confirmAdapt = window.confirm(
-          `Модель несумісна: ${compatibility.detail}\n\n` +
-            "Модель буде перенавчена під вашу поточну розмірність розкладу. Продовжити?"
+        showNotification(
+          `Модель несумісна: ${compatibility.detail}. Запускаю автоматичну адаптацію під поточну БД.`,
+          "info"
         );
-
-        if (!confirmAdapt) {
-          showNotification(`Модель несумісна: ${compatibility.detail}`, "error");
-          setGenerationStatus("failed");
-          return;
-        }
 
         const adaptationResponse = await trainingService.startModelAdaptation({
           source_model_version: selectedModelVersion,
@@ -439,17 +434,40 @@ const InteractiveTimetable: React.FC = () => {
         setAdaptationProgress(0);
         setGenerationStatus("idle");
 
-        stopAdaptationPolling();
-        adaptationPollRef.current = window.setInterval(() => {
-          void syncAdaptation(jobId);
-        }, 3000);
-        await syncAdaptation(jobId);
+        while (true) {
+          await new Promise((resolve) => window.setTimeout(resolve, 3000));
+          const adaptationStatusResponse = await trainingService.getModelAdaptationStatus(jobId);
+          const adaptationData: any = adaptationStatusResponse.data;
 
-        showNotification(
-          "Запущено адаптацію моделі під поточну розмірність. Після завершення можна запускати генерацію.",
-          "info"
-        );
-        return;
+          if (typeof adaptationData.progress_percent === "number") {
+            setAdaptationProgress(Math.max(0, Math.min(100, adaptationData.progress_percent)));
+          }
+
+          if (adaptationData.status === "completed") {
+            const adaptedModelVersion =
+              typeof adaptationData.model_version === "string" ? adaptationData.model_version : "";
+            setAdaptationStatus("completed");
+            setAdaptationJobId(null);
+            await loadModels();
+            if (adaptedModelVersion) {
+              setSelectedModelVersion(adaptedModelVersion);
+              modelForGeneration = adaptedModelVersion;
+            }
+            showNotification(
+              `Адаптацію завершено. Продовжую генерацію моделлю ${modelForGeneration}.`,
+              "success"
+            );
+            break;
+          }
+
+          if (adaptationData.status === "failed") {
+            throw new Error("Адаптація моделі завершилась з помилкою");
+          }
+
+          if (adaptationData.status === "stopped") {
+            throw new Error("Адаптація моделі була зупинена");
+          }
+        }
       }
 
       setGenerationStatus("running");
@@ -459,7 +477,7 @@ const InteractiveTimetable: React.FC = () => {
         iterations: 100,
         preserve_locked: false,
         use_existing: false,
-        model_version: selectedModelVersion,
+        model_version: modelForGeneration,
       });
 
       const id = response.data?.id;
@@ -470,10 +488,13 @@ const InteractiveTimetable: React.FC = () => {
       generationPollRef.current = window.setInterval(() => {
         void syncGeneration(id);
       }, 1000);
-      showNotification(`Генерацію запущено моделлю ${selectedModelVersion}`, "info");
+      showNotification(`Генерацію запущено моделлю ${modelForGeneration}`, "info");
     } catch (error: any) {
       console.error("Generation start failed:", error);
       setGenerationStatus("failed");
+      setAdaptationStatus("failed");
+      setAdaptationJobId(null);
+      stopAdaptationPolling();
       showNotification(
         error?.response?.data?.detail || "Не вдалося запустити генерацію",
         "error"
@@ -1001,7 +1022,7 @@ const InteractiveTimetable: React.FC = () => {
           }}
         >
           {/* Header Row */}
-          <Box sx={{ fontWeight: "bold", textAlign: "center", p: 1 }}>Пара</Box>
+          <Box sx={{ fontWeight: "bold", textAlign: "center", p: 1 }}>Урок</Box>
           {(viewMode === "week" ? DAYS : [DAYS[selectedDay]]).map(
             (day, idx) => (
               <Box
@@ -1036,7 +1057,7 @@ const InteractiveTimetable: React.FC = () => {
                 }}
               >
                 <Typography variant="subtitle2">
-                  {period.number} пара
+                  {period.number} урок
                 </Typography>
                 <Typography variant="caption" color="text.secondary">
                   {period.time}

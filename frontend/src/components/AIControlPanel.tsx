@@ -57,6 +57,7 @@ import {
   getGenerationStatus,
   stopGeneration,
   clearSchedule,
+  checkModelCompatibility,
   GenerationParams,
   ModelVersionItem,
   trainingService,
@@ -100,6 +101,11 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
   const [activeModelVersion, setActiveModelVersion] = useState<string>("");
   const [modelSelectionError, setModelSelectionError] = useState<string | null>(null);
   const [loadedModelMessage, setLoadedModelMessage] = useState<string | null>(null);
+  const [isAdapting, setIsAdapting] = useState(false);
+  const [adaptationStatus, setAdaptationStatus] = useState<
+    "idle" | "running" | "completed" | "failed"
+  >("idle");
+  const [adaptationProgress, setAdaptationProgress] = useState(0);
 
   // PPO Hyperparameters
   const [learningRate, setLearningRate] = useState(0.0003);
@@ -285,20 +291,103 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
       }
     }
 
-    setIsGenerating(true);
-    setStatus("running");
+    setIsGenerating(false);
+    setStatus("idle");
     setProgress(0);
     setCurrentIteration(0);
     setMetrics([]);
     setBestReward(null);
     setLoadedModelMessage(null);
+    setAdaptationProgress(0);
+    setAdaptationStatus("idle");
 
     try {
+      let modelForGeneration = selectedModelVersion || activeModelVersion || "";
+
+      if (modelForGeneration) {
+        const compatibilityResponse = await checkModelCompatibility(modelForGeneration);
+        const compatibility = compatibilityResponse.data;
+
+        if (!compatibility.compatible) {
+          if (compatibility.reason === "model_not_found") {
+            throw new Error(`Обрана модель не знайдена: ${modelForGeneration}`);
+          }
+
+          setIsAdapting(true);
+          setAdaptationStatus("running");
+          setLoadedModelMessage(
+            `Модель ${modelForGeneration} несумісна. Запущено автоматичну адаптацію під поточну БД...`
+          );
+
+          const adaptationResponse = await trainingService.startModelAdaptation({
+            source_model_version: modelForGeneration,
+            iterations: 400,
+            count: 100,
+            seed: 42,
+            train_ratio: 0.8,
+            dataset_name: "dataset_compatible_100",
+            device: "cpu",
+            promote: false,
+            iterations_mode: "total",
+          });
+
+          const jobId = adaptationResponse.data?.job_id;
+          if (!jobId) {
+            throw new Error("Не вдалося отримати ID job для адаптації моделі");
+          }
+
+          let adaptedModelVersion = "";
+          while (true) {
+            await new Promise((resolve) => window.setTimeout(resolve, 3000));
+            const adaptationStatusResponse = await trainingService.getModelAdaptationStatus(jobId);
+            const adaptationData: any = adaptationStatusResponse.data;
+
+            if (typeof adaptationData.progress_percent === "number") {
+              setAdaptationProgress(
+                Math.max(0, Math.min(100, adaptationData.progress_percent))
+              );
+            }
+
+            if (adaptationData.status === "completed") {
+              adaptedModelVersion =
+                typeof adaptationData.model_version === "string"
+                  ? adaptationData.model_version
+                  : "";
+              break;
+            }
+
+            if (adaptationData.status === "failed") {
+              throw new Error("Адаптація моделі завершилась з помилкою");
+            }
+
+            if (adaptationData.status === "stopped") {
+              throw new Error("Адаптація моделі була зупинена");
+            }
+          }
+
+          await loadModelVersions();
+
+          if (adaptedModelVersion) {
+            setSelectedModelVersion(adaptedModelVersion);
+            modelForGeneration = adaptedModelVersion;
+          }
+
+          setAdaptationProgress(100);
+          setAdaptationStatus("completed");
+          setLoadedModelMessage(
+            `Адаптацію завершено. Генерація продовжується з моделлю: ${modelForGeneration || "active"}`
+          );
+        }
+      }
+
+      setIsGenerating(true);
+      setStatus("running");
+
       const params: GenerationParams = {
         iterations,
         preserve_locked: preserveLocked,
         use_existing: useExisting,
-        model_version: selectedModelVersion || undefined,
+        model_version: modelForGeneration || undefined,
         learning_rate: learningRate,
         gamma,
         epsilon,
@@ -312,7 +401,7 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
       persistGenerationId(startedId);
       startPolling(startedId);
       setLoadedModelMessage(
-        `Генерація запущена з моделлю: ${selectedModelVersion || activeModelVersion || "active"}`
+        `Генерація запущена з моделлю: ${modelForGeneration || "active"}`
       );
 
       // Estimate time
@@ -321,6 +410,9 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
     } catch (error) {
       console.error("Generation failed:", error);
       applyTerminalStatus("failed");
+      setAdaptationStatus("failed");
+    } finally {
+      setIsAdapting(false);
     }
   };
 
@@ -444,7 +536,7 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
               min={10}
               max={1000}
               step={10}
-              disabled={isGenerating}
+              disabled={isGenerating || isAdapting}
               size="small"
             />
           </Box>
@@ -535,7 +627,7 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
                       { value: 500, label: "500" },
                       { value: 1000, label: "1000" },
                     ]}
-                    disabled={isGenerating}
+                    disabled={isGenerating || isAdapting}
                   />
                   <Typography variant="caption" color="text.secondary">
                     Приблизний час генерації: {formatTime(iterations * 0.05)}
@@ -548,7 +640,7 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
                       <Switch
                         checked={preserveLocked}
                         onChange={(e) => setPreserveLocked(e.target.checked)}
-                        disabled={isGenerating}
+                        disabled={isGenerating || isAdapting}
                       />
                     }
                     label="Зберігати заблоковані заняття"
@@ -558,7 +650,7 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
                       <Switch
                         checked={useExisting}
                         onChange={(e) => setUseExisting(e.target.checked)}
-                        disabled={isGenerating}
+                        disabled={isGenerating || isAdapting}
                       />
                     }
                     label="Використовувати поточний розклад як базу (без навчання)"
@@ -571,7 +663,7 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
                   label="Model Version"
                   value={selectedModelVersion}
                   onChange={(e) => setSelectedModelVersion(e.target.value)}
-                  disabled={isGenerating || availableModels.length === 0}
+                  disabled={isGenerating || isAdapting || availableModels.length === 0}
                   margin="normal"
                   helperText={
                     activeModelVersion
@@ -597,6 +689,15 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
                     {loadedModelMessage}
                   </Alert>
                 )}
+
+                {isAdapting && (
+                  <Box sx={{ mt: 2 }}>
+                    <Typography variant="body2" color="text.secondary" gutterBottom>
+                      Адаптація моделі під поточну БД: {adaptationProgress.toFixed(0)}%
+                    </Typography>
+                    <LinearProgress variant="determinate" value={adaptationProgress} />
+                  </Box>
+                )}
               </CardContent>
             </Card>
 
@@ -621,7 +722,7 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
                       }
                       size="small"
                       fullWidth
-                      disabled={isGenerating}
+                      disabled={isGenerating || isAdapting}
                       inputProps={{ step: 0.0001, min: 0.0001, max: 0.01 }}
                     />
                   </Grid>
@@ -633,7 +734,7 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
                       onChange={(e) => setGamma(parseFloat(e.target.value))}
                       size="small"
                       fullWidth
-                      disabled={isGenerating}
+                      disabled={isGenerating || isAdapting}
                       inputProps={{ step: 0.01, min: 0.9, max: 0.999 }}
                     />
                   </Grid>
@@ -645,7 +746,7 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
                       onChange={(e) => setEpsilon(parseFloat(e.target.value))}
                       size="small"
                       fullWidth
-                      disabled={isGenerating}
+                      disabled={isGenerating || isAdapting}
                       inputProps={{ step: 0.05, min: 0.1, max: 0.4 }}
                     />
                   </Grid>
@@ -657,7 +758,7 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
                       onChange={(e) => setBatchSize(parseInt(e.target.value))}
                       size="small"
                       fullWidth
-                      disabled={isGenerating}
+                      disabled={isGenerating || isAdapting}
                       inputProps={{ step: 16, min: 16, max: 256 }}
                     />
                   </Grid>
@@ -687,7 +788,7 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
                       min={0}
                       max={20}
                       step={1}
-                      disabled={isGenerating}
+                      disabled={isGenerating || isAdapting}
                       size="small"
                     />
                   </Box>
@@ -703,9 +804,14 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
                 size="large"
                 startIcon={isGenerating ? <StopIcon /> : <PlayIcon />}
                 onClick={isGenerating ? handleStop : handleStart}
+                disabled={isAdapting}
                 sx={{ flex: 2, minWidth: "200px" }}
               >
-                {isGenerating ? "Зупинити генерацію" : "Запустити генерацію"}
+                {isAdapting
+                  ? "Адаптація моделі..."
+                  : isGenerating
+                    ? "Зупинити генерацію"
+                    : "Запустити генерацію"}
               </Button>
               <Button
                 variant="outlined"
@@ -719,7 +825,7 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
                   )
                 }
                 onClick={handleClearSchedule}
-                disabled={isGenerating || clearingSchedule}
+                disabled={isGenerating || isAdapting || clearingSchedule}
                 sx={{ flex: 1, minWidth: "180px" }}
               >
                 {clearingSchedule ? "Очищення..." : "Очистити розклад"}
@@ -730,7 +836,7 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({
                 size="large"
                 startIcon={<TimelineIcon />}
                 onClick={() => navigate("/training-metrics")}
-                disabled={isGenerating}
+                disabled={isGenerating || isAdapting}
                 sx={{ flex: 1, minWidth: "180px" }}
               >
                 Метрики навчання

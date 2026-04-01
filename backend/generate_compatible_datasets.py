@@ -182,6 +182,7 @@ def generate_compatible_dataset(
             "test_cases": len(test_entries),
             "compatible_template": str(reference_case_path.relative_to(workspace_root)).replace("\\", "/"),
             "reference_token": old_token,
+            "reference_sha256": _sha256_file(reference_case_path),
         },
     }
 

@@ -145,16 +145,16 @@ def generate_random_data(
             logger.warning(f"⚠️ Помилка при очищенні (можливо база вже порожня): {e}")
             db.rollback()
         
-        # 1. Генерація таймслотів (5 днів × 6 періодів = 30 слотів)
+        # 1. Генерація таймслотів (5 днів × 6 уроків по 45 хв = 30 слотів)
         logger.info("⏰ Генерація таймслотів...")
         days = ["Понеділок", "Вівторок", "Середа", "Четвер", "П'ятниця"]
         periods = [
-            {"period": 1, "start": time(8, 0), "end": time(9, 30)},
-            {"period": 2, "start": time(9, 45), "end": time(11, 15)},
-            {"period": 3, "start": time(11, 30), "end": time(13, 0)},
-            {"period": 4, "start": time(13, 30), "end": time(15, 0)},
-            {"period": 5, "start": time(15, 15), "end": time(16, 45)},
-            {"period": 6, "start": time(17, 0), "end": time(18, 30)},
+            {"period": 1, "start": time(8, 30), "end": time(9, 15)},
+            {"period": 2, "start": time(9, 25), "end": time(10, 10)},
+            {"period": 3, "start": time(10, 20), "end": time(11, 5)},
+            {"period": 4, "start": time(11, 15), "end": time(12, 0)},
+            {"period": 5, "start": time(12, 10), "end": time(12, 55)},
+            {"period": 6, "start": time(13, 5), "end": time(13, 50)},
         ]
         
         timeslots = []

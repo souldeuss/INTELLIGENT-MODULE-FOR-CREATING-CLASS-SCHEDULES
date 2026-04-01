@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Box,
@@ -7,8 +7,14 @@ import {
   CardContent,
   Chip,
   CircularProgress,
+  Dialog,
+
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Grid,
   LinearProgress,
+  MenuItem,
   Paper,
   Stack,
   Table,
@@ -17,7 +23,6 @@ import {
   TableHead,
   TableRow,
   TextField,
-  MenuItem,
   ToggleButton,
   ToggleButtonGroup,
   Typography,
@@ -34,11 +39,10 @@ import {
 } from "recharts";
 import {
   BestSchedulePreviewResponse,
+  DatasetDimensionsResponse,
   Dataset100PresetStatusResponse,
   ModelVersionItem,
-  TrainingCheckpointItem,
   TrainingHistoryResponse,
-  TrainingSessionItem,
   TrainingStatusResponse,
   trainingService,
 } from "../services/api";
@@ -59,8 +63,7 @@ interface LegacyTrainingMetrics {
 interface DashboardPoint {
   episode: number;
   policyLoss: number | null;
-  valueLoss: number | null;
-  totalLoss: number | null;
+  loss: number | null;
   meanReward: number | null;
   completionRate: number | null;
   hardConflicts: number | null;
@@ -69,39 +72,210 @@ interface DashboardPoint {
   successRate: number | null;
 }
 
+interface TrainingHyperparameterDraft {
+  learning_rate: number;
+  gamma: number;
+  epsilon: number;
+}
+
 const POLLING_INTERVAL_MS = 4000;
+const TRAINING_DASHBOARD_CACHE_KEY = "trainingMetricsDashboardCacheV1";
+const DEFAULT_TRAINING_HYPERPARAMETERS: TrainingHyperparameterDraft = {
+  learning_rate: 3e-4,
+  gamma: 0.99,
+  epsilon: 0.2,
+};
 
 type PresetJobStatus = Dataset100PresetStatusResponse;
 
+interface TrainingDashboardCache {
+  status: TrainingStatusResponse | null;
+  history: TrainingHistoryResponse | null;
+  preview: BestSchedulePreviewResponse | null;
+  legacy: LegacyTrainingMetrics | null;
+  presetJob: PresetJobStatus | null;
+  modelVersions: ModelVersionItem[];
+  selectedModelVersion: string;
+  compareModelVersion: string;
+  trainingHyperparameters: TrainingHyperparameterDraft;
+  lastUpdatedIso: string | null;
+}
+
+const sanitizeTrainingHyperparameters = (
+  source?: Partial<TrainingHyperparameterDraft> | null
+): TrainingHyperparameterDraft => ({
+  learning_rate:
+    typeof source?.learning_rate === "number" ? source.learning_rate : DEFAULT_TRAINING_HYPERPARAMETERS.learning_rate,
+  gamma: typeof source?.gamma === "number" ? source.gamma : DEFAULT_TRAINING_HYPERPARAMETERS.gamma,
+  epsilon: typeof source?.epsilon === "number" ? source.epsilon : DEFAULT_TRAINING_HYPERPARAMETERS.epsilon,
+});
+
+const readDashboardCache = (): TrainingDashboardCache | null => {
+  try {
+    const raw = localStorage.getItem(TRAINING_DASHBOARD_CACHE_KEY);
+    if (!raw) {
+      return null;
+    }
+
+    const parsed = JSON.parse(raw) as Partial<TrainingDashboardCache>;
+    return {
+      status: parsed.status ?? null,
+      history: parsed.history ?? null,
+      preview: parsed.preview ?? null,
+      legacy: parsed.legacy ?? null,
+      presetJob: parsed.presetJob ?? null,
+      modelVersions: Array.isArray(parsed.modelVersions) ? parsed.modelVersions : [],
+      selectedModelVersion: parsed.selectedModelVersion ?? "",
+      compareModelVersion: parsed.compareModelVersion ?? "",
+      trainingHyperparameters: sanitizeTrainingHyperparameters(parsed.trainingHyperparameters),
+      lastUpdatedIso: parsed.lastUpdatedIso ?? null,
+    };
+  } catch {
+    return null;
+  }
+};
+
 const TrainingMetrics: React.FC = () => {
-  const [status, setStatus] = useState<TrainingStatusResponse | null>(null);
-  const [history, setHistory] = useState<TrainingHistoryResponse | null>(null);
-  const [preview, setPreview] = useState<BestSchedulePreviewResponse | null>(null);
-  const [legacy, setLegacy] = useState<LegacyTrainingMetrics | null>(null);
-  const [loading, setLoading] = useState(true);
+  const initialCache = useMemo(() => readDashboardCache(), []);
+  const hasCachedSnapshot = useMemo(() => {
+    if (!initialCache) {
+      return false;
+    }
+    return Boolean(initialCache.status || initialCache.history || initialCache.preview || initialCache.legacy || initialCache.presetJob);
+  }, [initialCache]);
+
+  const [status, setStatus] = useState<TrainingStatusResponse | null>(initialCache?.status ?? null);
+  const [history, setHistory] = useState<TrainingHistoryResponse | null>(initialCache?.history ?? null);
+  const [preview, setPreview] = useState<BestSchedulePreviewResponse | null>(initialCache?.preview ?? null);
+  const [legacy, setLegacy] = useState<LegacyTrainingMetrics | null>(initialCache?.legacy ?? null);
+  const [loading, setLoading] = useState(!hasCachedSnapshot);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(
+    initialCache?.lastUpdatedIso ? new Date(initialCache.lastUpdatedIso) : null
+  );
   const [previewMode, setPreviewMode] = useState<"heatmap" | "table">("heatmap");
   const [presetIterations, setPresetIterations] = useState(100);
   const [presetSeed, setPresetSeed] = useState(42);
   const [presetDevice, setPresetDevice] = useState("cpu");
-  const [datasetSizeMode, setDatasetSizeMode] = useState<
-    "compatible_100" | "compatible_1000" | "custom"
-  >("compatible_100");
+  const [trainingHyperparameters, setTrainingHyperparameters] = useState<TrainingHyperparameterDraft>(
+    initialCache?.trainingHyperparameters ?? DEFAULT_TRAINING_HYPERPARAMETERS
+  );
+  const [datasetSizeMode, setDatasetSizeMode] = useState<"compatible_100" | "compatible_1000" | "custom">("compatible_100");
   const [customDatasetSize, setCustomDatasetSize] = useState(200);
   const [iterationsMode, setIterationsMode] = useState<"total" | "per-case">("total");
   const [presetSubmitting, setPresetSubmitting] = useState(false);
   const [presetStopping, setPresetStopping] = useState(false);
+  const [hyperparameterSubmitting, setHyperparameterSubmitting] = useState(false);
   const [presetError, setPresetError] = useState<string | null>(null);
   const [presetInfo, setPresetInfo] = useState<string | null>(null);
-  const [presetJob, setPresetJob] = useState<PresetJobStatus | null>(null);
-  const [modelVersions, setModelVersions] = useState<ModelVersionItem[]>([]);
-  const [checkpoints, setCheckpoints] = useState<TrainingCheckpointItem[]>([]);
-  const [trainingSessions, setTrainingSessions] = useState<TrainingSessionItem[]>([]);
-  const [selectedModelVersion, setSelectedModelVersion] = useState<string>("");
-  const [compareModelVersion, setCompareModelVersion] = useState<string>("");
+  const [hyperparameterError, setHyperparameterError] = useState<string | null>(null);
+  const [hyperparameterInfo, setHyperparameterInfo] = useState<string | null>(null);
+  const [presetJob, setPresetJob] = useState<PresetJobStatus | null>(initialCache?.presetJob ?? null);
+  const [modelVersions, setModelVersions] = useState<ModelVersionItem[]>(initialCache?.modelVersions ?? []);
+  const [selectedModelVersion, setSelectedModelVersion] = useState<string>(initialCache?.selectedModelVersion ?? "");
+  const [compareModelVersion, setCompareModelVersion] = useState<string>(initialCache?.compareModelVersion ?? "");
   const [compareHistory, setCompareHistory] = useState<TrainingHistoryResponse | null>(null);
+  const [datasetDimensions, setDatasetDimensions] = useState<DatasetDimensionsResponse | null>(null);
+  const [datasetDimensionsError, setDatasetDimensionsError] = useState<string | null>(null);
+  const [fullscreenChart, setFullscreenChart] = useState<"policy" | "loss" | "reward" | "completion" | "success" | null>(null);
+  const hasHydratedHyperparametersRef = useRef(Boolean(initialCache?.trainingHyperparameters));
+
+  const selectedDatasetName = useMemo(() => {
+    if (presetJob?.dataset_name) {
+      return presetJob.dataset_name;
+    }
+    if (datasetSizeMode === "compatible_100") {
+      return "dataset_compatible_100";
+    }
+    if (datasetSizeMode === "compatible_1000") {
+      return "dataset_compatible_1000";
+    }
+    return `dataset_${customDatasetSize}`;
+  }, [customDatasetSize, datasetSizeMode, presetJob?.dataset_name]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        TRAINING_DASHBOARD_CACHE_KEY,
+        JSON.stringify({
+          status,
+          history,
+          preview,
+          legacy,
+          presetJob,
+          modelVersions,
+          selectedModelVersion,
+          compareModelVersion,
+          trainingHyperparameters,
+          lastUpdatedIso: lastUpdated ? lastUpdated.toISOString() : null,
+        } satisfies TrainingDashboardCache)
+      );
+    } catch {
+      // Ignore cache write failures and continue with in-memory state.
+    }
+  }, [
+    status,
+    history,
+    preview,
+    legacy,
+    presetJob,
+    modelVersions,
+    selectedModelVersion,
+    compareModelVersion,
+    trainingHyperparameters,
+    lastUpdated,
+  ]);
+
+  useEffect(() => {
+    if (hasHydratedHyperparametersRef.current) {
+      return;
+    }
+
+    const hyperparameters = status?.hyperparameters;
+    if (!hyperparameters) {
+      return;
+    }
+
+    setTrainingHyperparameters({
+      learning_rate:
+        typeof hyperparameters.learning_rate === "number"
+          ? hyperparameters.learning_rate
+          : DEFAULT_TRAINING_HYPERPARAMETERS.learning_rate,
+      gamma: typeof hyperparameters.gamma === "number" ? hyperparameters.gamma : DEFAULT_TRAINING_HYPERPARAMETERS.gamma,
+      epsilon: typeof hyperparameters.epsilon === "number" ? hyperparameters.epsilon : DEFAULT_TRAINING_HYPERPARAMETERS.epsilon,
+    });
+    hasHydratedHyperparametersRef.current = true;
+  }, [status]);
+
+  useEffect(() => {
+    if (presetJob?.job_id) {
+      return;
+    }
+
+    let mounted = true;
+    const restoreActiveJob = async () => {
+      try {
+        const response = await trainingService.getModelTrainingJobs();
+        if (!mounted) {
+          return;
+        }
+
+        const jobs = response.data?.jobs || [];
+        const activeJob = jobs.find((job) => job.status === "running") || jobs[0] || null;
+        if (activeJob) {
+          setPresetJob(activeJob);
+        }
+      } catch {
+        // Keep UI responsive even if jobs restore endpoint is temporarily unavailable.
+      }
+    };
+
+    void restoreActiveJob();
+    return () => {
+      mounted = false;
+    };
+  }, [presetJob?.job_id]);
 
   useEffect(() => {
     let mounted = true;
@@ -112,18 +286,17 @@ const TrainingMetrics: React.FC = () => {
       }
 
       if (initial) {
-        setLoading(true);
+        if (hasCachedSnapshot) {
+          setRefreshing(true);
+        } else {
+          setLoading(true);
+        }
       } else {
         setRefreshing(true);
       }
 
       try {
-        const [statusRes, modelsRes, checkpointsRes, sessionsRes] = await Promise.all([
-          trainingService.getStatus(),
-          trainingService.getModelVersions(),
-          trainingService.getCheckpoints(),
-          trainingService.getTrainingSessions(),
-        ]);
+        const [statusRes, modelsRes] = await Promise.all([trainingService.getStatus(), trainingService.getModelVersions()]);
 
         if (!mounted) {
           return;
@@ -137,15 +310,11 @@ const TrainingMetrics: React.FC = () => {
             : activeModel || versions[0]?.name || "";
 
         const effectiveCompareModel =
-          compareModelVersion && compareModelVersion !== effectivePrimaryModel
-            ? compareModelVersion
-            : "";
+          compareModelVersion && compareModelVersion !== effectivePrimaryModel ? compareModelVersion : "";
 
         const [historyRes, compareHistoryRes, previewRes] = await Promise.all([
           trainingService.getHistory(240, effectivePrimaryModel || undefined),
-          effectiveCompareModel
-            ? trainingService.getHistory(240, effectiveCompareModel)
-            : Promise.resolve(null),
+          effectiveCompareModel ? trainingService.getHistory(240, effectiveCompareModel) : Promise.resolve(null),
           trainingService.getBestSchedulePreview(20, effectivePrimaryModel || undefined),
         ]);
 
@@ -158,8 +327,6 @@ const TrainingMetrics: React.FC = () => {
         setCompareHistory(compareHistoryRes?.data || null);
         setPreview(previewRes.data);
         setModelVersions(versions);
-        setCheckpoints(checkpointsRes.data?.checkpoints || []);
-        setTrainingSessions(sessionsRes.data?.sessions || []);
         if (effectivePrimaryModel !== selectedModelVersion) {
           setSelectedModelVersion(effectivePrimaryModel);
         }
@@ -185,22 +352,9 @@ const TrainingMetrics: React.FC = () => {
           setError(null);
           setLastUpdated(new Date());
 
-          const [modelsRes, checkpointsRes, sessionsRes] = await Promise.allSettled([
-            trainingService.getModelVersions(),
-            trainingService.getCheckpoints(),
-            trainingService.getTrainingSessions(),
-          ]);
-
+          const [modelsRes] = await Promise.allSettled([trainingService.getModelVersions()]);
           if (modelsRes.status === "fulfilled") {
             setModelVersions(modelsRes.value.data?.versions || []);
-          }
-
-          if (checkpointsRes.status === "fulfilled") {
-            setCheckpoints(checkpointsRes.value.data?.checkpoints || []);
-          }
-
-          if (sessionsRes.status === "fulfilled") {
-            setTrainingSessions(sessionsRes.value.data?.sessions || []);
           }
         } catch (legacyErr: any) {
           if (!mounted) {
@@ -208,9 +362,7 @@ const TrainingMetrics: React.FC = () => {
           }
 
           setError(
-            liveErr?.response?.data?.detail ||
-              legacyErr?.response?.data?.detail ||
-              "Failed to load training dashboard"
+            liveErr?.response?.data?.detail || legacyErr?.response?.data?.detail || "Failed to load training dashboard"
           );
         }
       } finally {
@@ -230,7 +382,7 @@ const TrainingMetrics: React.FC = () => {
       mounted = false;
       window.clearInterval(timer);
     };
-  }, [compareModelVersion, selectedModelVersion]);
+  }, [compareModelVersion, hasCachedSnapshot, selectedModelVersion]);
 
   useEffect(() => {
     if (!presetJob?.job_id) {
@@ -263,6 +415,37 @@ const TrainingMetrics: React.FC = () => {
     };
   }, [presetJob]);
 
+  useEffect(() => {
+    let mounted = true;
+
+    const loadDimensions = async () => {
+      try {
+        const response = await trainingService.getDatasetDimensions(selectedDatasetName);
+        if (!mounted) {
+          return;
+        }
+        setDatasetDimensions(response.data);
+        setDatasetDimensionsError(null);
+      } catch (err: any) {
+        if (!mounted) {
+          return;
+        }
+        setDatasetDimensions(null);
+        setDatasetDimensionsError(err?.response?.data?.detail || "Не вдалося отримати розмірності поточної БД/датасету");
+      }
+    };
+
+    void loadDimensions();
+    const timer = window.setInterval(() => {
+      void loadDimensions();
+    }, POLLING_INTERVAL_MS);
+
+    return () => {
+      mounted = false;
+      window.clearInterval(timer);
+    };
+  }, [selectedDatasetName]);
+
   const handleStartPreset = async () => {
     setPresetSubmitting(true);
     setPresetError(null);
@@ -273,6 +456,9 @@ const TrainingMetrics: React.FC = () => {
         iterations: presetIterations,
         seed: presetSeed,
         device: presetDevice,
+        learning_rate: trainingHyperparameters.learning_rate,
+        gamma: trainingHyperparameters.gamma,
+        epsilon: trainingHyperparameters.epsilon,
         dataset_size_mode: datasetSizeMode,
         custom_case_count: datasetSizeMode === "custom" ? customDatasetSize : undefined,
         iterations_mode: iterationsMode,
@@ -312,6 +498,73 @@ const TrainingMetrics: React.FC = () => {
     }
   };
 
+  const handleHyperparameterChange = (field: keyof TrainingHyperparameterDraft, value: string) => {
+    const parsed = Number(value);
+    setTrainingHyperparameters((previous) => ({
+      ...previous,
+      [field]: Number.isFinite(parsed) ? parsed : previous[field],
+    }));
+  };
+
+  const handleApplyHyperparameters = async () => {
+    if (!presetJob?.job_id || presetJob.status !== "running") {
+      setHyperparameterError("Live update доступний лише для активного job.");
+      return;
+    }
+
+    setHyperparameterSubmitting(true);
+    setHyperparameterError(null);
+    setHyperparameterInfo(null);
+
+    const activeHyperparameters = {
+      learning_rate:
+        typeof status?.hyperparameters?.learning_rate === "number"
+          ? status.hyperparameters.learning_rate
+          : typeof status?.metrics?.learning_rate === "number"
+          ? status.metrics.learning_rate
+          : null,
+      gamma: typeof status?.hyperparameters?.gamma === "number" ? status.hyperparameters.gamma : null,
+      epsilon: typeof status?.hyperparameters?.epsilon === "number" ? status.hyperparameters.epsilon : null,
+    };
+
+    const updates: Array<Promise<unknown>> = [];
+    const queuedLabels: string[] = [];
+
+    (Object.keys(trainingHyperparameters) as Array<keyof TrainingHyperparameterDraft>).forEach((field) => {
+      const currentValue = activeHyperparameters[field];
+      const nextValue = trainingHyperparameters[field];
+      if (typeof currentValue === "number" && Math.abs(currentValue - nextValue) < 1e-12) {
+        return;
+      }
+
+      updates.push(
+        trainingService.updateHyperparameter({
+          parameter: field,
+          value: nextValue,
+          reason: `Updated from training dashboard for job ${presetJob.job_id}`,
+        })
+      );
+      queuedLabels.push(field.replace("_", " "));
+    });
+
+    if (!updates.length) {
+      setHyperparameterInfo("Немає змін для застосування.");
+      setHyperparameterSubmitting(false);
+      return;
+    }
+
+    try {
+      await Promise.all(updates);
+      setHyperparameterInfo(
+        `Оновлення поставлено в чергу: ${queuedLabels.join(", ")}. Зміни застосуються з наступної ітерації.`
+      );
+    } catch (err: any) {
+      setHyperparameterError(err?.response?.data?.detail || "Не вдалося оновити PPO гіперпараметри");
+    } finally {
+      setHyperparameterSubmitting(false);
+    }
+  };
+
   const dashboardData: DashboardPoint[] = useMemo(() => {
     const asPercent = (value: number | null | undefined): number | null => {
       if (typeof value !== "number") {
@@ -338,13 +591,10 @@ const TrainingMetrics: React.FC = () => {
         return {
           episode: rawEpisode + 1,
           policyLoss: history.policy_loss?.[idx] ?? null,
-          valueLoss: history.value_loss?.[idx] ?? null,
-          totalLoss: history.total_loss?.[idx] ?? null,
-          meanReward:
-            history.reward_per_step?.[idx] ??
-            history.average_reward?.[idx] ??
-            history.episode_reward?.[idx] ??
-            null,
+          loss: history.total_loss?.[idx] ?? history.value_loss?.[idx] ?? null,
+          meanReward: Math.abs(
+            history.reward_per_step?.[idx] ?? history.average_reward?.[idx] ?? history.episode_reward?.[idx] ?? 0
+          ),
           completionRate: asPercent(history.completion_rate?.[idx]),
           hardConflicts: history.hard_violations?.[idx] ?? null,
           softSatisfaction,
@@ -375,9 +625,8 @@ const TrainingMetrics: React.FC = () => {
       return {
         episode,
         policyLoss: legacy.metrics.actor_losses[idx] ?? null,
-        valueLoss: legacy.metrics.critic_losses[idx] ?? null,
-        totalLoss: null,
-        meanReward: legacy.metrics.rewards[idx] ?? null,
+        loss: legacy.metrics.critic_losses[idx] ?? null,
+        meanReward: Math.abs(legacy.metrics.rewards[idx] ?? 0),
         completionRate: asPercent(legacy.metrics.completion_rates[idx] ?? null),
         hardConflicts: hard,
         softSatisfaction,
@@ -417,11 +666,13 @@ const TrainingMetrics: React.FC = () => {
       return {
         episode: rawEpisode + 1,
         policyLoss: compareHistory.policy_loss?.[idx] ?? null,
-        valueLoss: compareHistory.value_loss?.[idx] ?? null,
-        totalLoss: compareHistory.total_loss?.[idx] ?? null,
-        meanReward:
+        loss: compareHistory.total_loss?.[idx] ?? compareHistory.value_loss?.[idx] ?? null,
+        meanReward: Math.abs(
           compareHistory.reward_per_step?.[idx] ??
-          compareHistory.average_reward?.[idx] ?? compareHistory.episode_reward?.[idx] ?? null,
+            compareHistory.average_reward?.[idx] ??
+            compareHistory.episode_reward?.[idx] ??
+            0
+        ),
         completionRate: asPercent(compareHistory.completion_rate?.[idx]),
         hardConflicts: compareHistory.hard_violations?.[idx] ?? null,
         softSatisfaction,
@@ -464,22 +715,6 @@ const TrainingMetrics: React.FC = () => {
     return rows;
   }, [compareDashboardData, dashboardData]);
 
-  const hardConflictsComparisonData = useMemo(() => {
-    const maxLen = Math.max(dashboardData.length, compareDashboardData.length);
-    if (maxLen === 0) {
-      return [];
-    }
-    const rows: Array<{ episode: number; primaryHardConflicts: number | null; compareHardConflicts: number | null }> = [];
-    for (let idx = 0; idx < maxLen; idx += 1) {
-      rows.push({
-        episode: idx + 1,
-        primaryHardConflicts: dashboardData[idx]?.hardConflicts ?? null,
-        compareHardConflicts: compareDashboardData[idx]?.hardConflicts ?? null,
-      });
-    }
-    return rows;
-  }, [compareDashboardData, dashboardData]);
-
   const policyLossChartData = useMemo(() => {
     return dashboardData.map((point) => ({
       episode: point.episode,
@@ -487,38 +722,11 @@ const TrainingMetrics: React.FC = () => {
     }));
   }, [dashboardData]);
 
-  const valueLossPercentChartData = useMemo(() => {
-    const firstValueLoss = dashboardData.find(
-      (point) => typeof point.valueLoss === "number" && Math.abs(point.valueLoss) > 1e-9
-    )?.valueLoss;
-
-    const firstTotalLoss = dashboardData.find(
-      (point) => typeof point.totalLoss === "number" && Math.abs(point.totalLoss) > 1e-9
-    )?.totalLoss;
-
-    return dashboardData.map((point) => {
-      const rawValueLossPercent =
-        typeof point.valueLoss === "number" && typeof firstValueLoss === "number"
-          ? (point.valueLoss / firstValueLoss) * 100
-          : null;
-
-      const rawTotalLossPercent =
-        typeof point.totalLoss === "number" && typeof firstTotalLoss === "number"
-          ? (point.totalLoss / firstTotalLoss) * 100
-          : null;
-
-      const valueLossPercent =
-        typeof rawValueLossPercent === "number" ? 100 - rawValueLossPercent : null;
-
-      const totalLossPercent =
-        typeof rawTotalLossPercent === "number" ? 100 - rawTotalLossPercent : null;
-
-      return {
-        episode: point.episode,
-        valueLossPercent,
-        totalLossPercent,
-      };
-    });
+  const lossChartData = useMemo(() => {
+    return dashboardData.map((point) => ({
+      episode: point.episode,
+      loss: point.loss,
+    }));
   }, [dashboardData]);
 
   const normalizedHyperparameters = useMemo(() => {
@@ -547,13 +755,110 @@ const TrainingMetrics: React.FC = () => {
     return value.toFixed(digits);
   };
 
-  const invertForDisplay = (value: number | null | undefined): number | null => {
+  const compactFormatter = useMemo(
+    () =>
+      new Intl.NumberFormat("uk-UA", {
+        notation: "compact",
+        maximumFractionDigits: 2,
+      }),
+    []
+  );
+
+  const formatMetricCompact = (value: number | null | undefined, digits = 2): string => {
     if (typeof value !== "number" || Number.isNaN(value)) {
+      return "-";
+    }
+
+    const absValue = Math.abs(value);
+    if (absValue >= 1000) {
+      return compactFormatter.format(value);
+    }
+
+    return value.toFixed(digits);
+  };
+
+  const formatChartValue = (value: number | string): string => {
+    if (typeof value === "number") {
+      return formatMetricCompact(value);
+    }
+
+    const parsed = Number(value);
+    if (!Number.isNaN(parsed)) {
+      return formatMetricCompact(parsed);
+    }
+
+    return String(value);
+  };
+
+  const parseDurationSeconds = (value: string | number | null | undefined): number | null => {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+
+    if (typeof value !== "string" || !value.trim()) {
       return null;
     }
 
-    const inverted = -value;
-    return Math.abs(inverted) < 1e-9 ? 0 : inverted;
+    const parts = value.split(":").map((part) => Number(part));
+    if (parts.some((part) => Number.isNaN(part))) {
+      return null;
+    }
+
+    if (parts.length === 3) {
+      const [hours, minutes, seconds] = parts;
+      return hours * 3600 + minutes * 60 + seconds;
+    }
+
+    if (parts.length === 2) {
+      const [minutes, seconds] = parts;
+      return minutes * 60 + seconds;
+    }
+
+    return null;
+  };
+
+  const formatDurationMinutes = (seconds: number | null | undefined): string => {
+    if (typeof seconds !== "number" || Number.isNaN(seconds)) {
+      return "-";
+    }
+
+    const minutes = seconds / 60;
+    return `${minutes.toFixed(minutes >= 10 ? 0 : 1)} хв`;
+  };
+
+  const trainingDurationMinutes = useMemo(() => {
+    const elapsedSeconds =
+      status?.timing?.elapsed_seconds ??
+      parseDurationSeconds(status?.session_summary?.runtime_hms) ??
+      parseDurationSeconds(status?.timing?.elapsed_hms) ??
+      null;
+
+    return formatDurationMinutes(elapsedSeconds);
+  }, [status]);
+
+  const rewardValueLabel = (value: number | null | undefined, digits = 2): string => {
+    if (typeof value !== "number" || Number.isNaN(value)) {
+      return "-";
+    }
+
+    return formatNumber(Math.abs(value), digits);
+  };
+
+  const getChartTitle = (chart: NonNullable<typeof fullscreenChart>): string => {
+    switch (chart) {
+      case "policy":
+        return "Policy Loss Curve";
+      case "loss":
+        return "Training Loss";
+      case "reward":
+        return "Mean Reward per Episode";
+      case "completion":
+        return "Completion Rate over Time";
+      case "success":
+        return "Successful Generations Trend";
+      default:
+        return "";
+    }
   };
 
   const formatDateTime = (value: string | number | null | undefined): string => {
@@ -610,19 +915,9 @@ const TrainingMetrics: React.FC = () => {
         lastPoint?.episode ?? status?.progress?.current_iteration ?? legacy?.iterations ?? 0,
       totalEpisodes: lastPoint?.episode ?? status?.progress?.total_iterations ?? legacy?.iterations ?? 0,
       meanReward:
-        meanNormalizedReward ??
-        currentNormalizedReward ??
-        meanEpisodeReward ??
-        currentEpisodeReward ??
-        lastPoint?.meanReward ??
-        status?.metrics?.current_reward ??
-        0,
+        meanNormalizedReward ?? currentNormalizedReward ?? meanEpisodeReward ?? currentEpisodeReward ?? lastPoint?.meanReward ?? status?.metrics?.current_reward ?? 0,
       bestReward:
-        bestNormalizedReward ??
-        bestEpisodeReward ??
-        bestHistoryReward ??
-        status?.metrics?.best_reward ??
-        0,
+        bestNormalizedReward ?? bestEpisodeReward ?? bestHistoryReward ?? status?.metrics?.best_reward ?? 0,
       hardConflicts: lastPoint?.hardConflicts ?? status?.metrics?.hard_violations ?? 0,
       successfulGenerations:
         lastPoint?.successfulGenerations ?? status?.metrics?.successful_generations ?? 0,
@@ -641,6 +936,133 @@ const TrainingMetrics: React.FC = () => {
   const hasPrimaryHistory = useMemo(() => {
     return Boolean(history?.iteration?.length);
   }, [history]);
+
+  const recentModelVersions = useMemo(() => {
+    return [...modelVersions]
+      .sort((left, right) => {
+        const leftTimestamp = Date.parse(String(left.updated_at ?? "")) || 0;
+        const rightTimestamp = Date.parse(String(right.updated_at ?? "")) || 0;
+        return rightTimestamp - leftTimestamp;
+      })
+      .slice(0, 3);
+  }, [modelVersions]);
+
+  const renderPolicyLossChart = (height: number) => (
+    <ResponsiveContainer width="100%" height={height}>
+      <LineChart data={policyLossChartData}>
+        <CartesianGrid strokeDasharray="3 3" />
+        <XAxis dataKey="episode" />
+        <YAxis tickFormatter={(value: number) => formatMetricCompact(value)} />
+        <Tooltip formatter={(value: number | string) => formatChartValue(value)} />
+        <Legend />
+        <Line type="monotone" dataKey="policyLoss" name="Policy Loss" stroke="#0d47a1" strokeWidth={2} dot={false} />
+      </LineChart>
+    </ResponsiveContainer>
+  );
+
+  const renderLossChart = (height: number) => (
+    <ResponsiveContainer width="100%" height={height}>
+      <LineChart data={lossChartData}>
+        <CartesianGrid strokeDasharray="3 3" />
+        <XAxis dataKey="episode" />
+        <YAxis tickFormatter={(value: number) => formatMetricCompact(value)} />
+        <Tooltip formatter={(value: number | string) => formatChartValue(value)} />
+        <Legend />
+        <Line type="monotone" dataKey="loss" name="Training Loss" stroke="#1976d2" strokeWidth={2} dot={false} />
+      </LineChart>
+    </ResponsiveContainer>
+  );
+
+  const renderRewardChart = (height: number) => (
+    <ResponsiveContainer width="100%" height={height}>
+      <LineChart data={rewardComparisonData}>
+        <CartesianGrid strokeDasharray="3 3" />
+        <XAxis dataKey="episode" />
+        <YAxis />
+        <Tooltip />
+        <Legend />
+        <Line
+          type="monotone"
+          dataKey="primaryReward"
+          name={`Mean Reward • ${selectedModelVersion || "selected"}`}
+          stroke="#1565c0"
+          strokeWidth={2.5}
+          dot={false}
+        />
+        {compareModelVersion && (
+          <Line
+            type="monotone"
+            dataKey="compareReward"
+            name={`Mean Reward • ${compareModelVersion}`}
+            stroke="#ef6c00"
+            strokeWidth={2.5}
+            dot={false}
+          />
+        )}
+      </LineChart>
+    </ResponsiveContainer>
+  );
+
+  const renderCompletionChart = (height: number) => (
+    <ResponsiveContainer width="100%" height={height}>
+      <LineChart data={completionComparisonData}>
+        <CartesianGrid strokeDasharray="3 3" />
+        <XAxis dataKey="episode" />
+        <YAxis domain={[0, 100]} />
+        <Tooltip />
+        <Legend />
+        <Line
+          type="monotone"
+          dataKey="primaryCompletion"
+          name={`Completion • ${selectedModelVersion || "selected"}`}
+          stroke="#64b5f6"
+          strokeWidth={2}
+          dot={false}
+        />
+        {compareModelVersion && (
+          <Line
+            type="monotone"
+            dataKey="compareCompletion"
+            name={`Completion • ${compareModelVersion}`}
+            stroke="#ef6c00"
+            strokeWidth={2}
+            dot={false}
+          />
+        )}
+      </LineChart>
+    </ResponsiveContainer>
+  );
+
+  const renderSuccessChart = (height: number) => (
+    <ResponsiveContainer width="100%" height={height}>
+      <LineChart data={dashboardData}>
+        <CartesianGrid strokeDasharray="3 3" />
+        <XAxis dataKey="episode" />
+        <YAxis yAxisId="rate" domain={[0, 100]} />
+        <YAxis yAxisId="count" orientation="right" allowDecimals={false} />
+        <Tooltip />
+        <Legend />
+        <Line
+          yAxisId="rate"
+          type="monotone"
+          dataKey="successRate"
+          name="Success Rate (%)"
+          stroke="#2e7d32"
+          strokeWidth={2}
+          dot={false}
+        />
+        <Line
+          yAxisId="count"
+          type="monotone"
+          dataKey="successfulGenerations"
+          name="Successful Generations"
+          stroke="#66bb6a"
+          strokeWidth={2}
+          dot={false}
+        />
+      </LineChart>
+    </ResponsiveContainer>
+  );
 
   if (loading) {
     return (
@@ -741,22 +1163,6 @@ const TrainingMetrics: React.FC = () => {
         )}
       </Paper>
 
-      {status?.progress && (
-        <Paper elevation={0} sx={{ p: 2, mb: 3, border: "1px solid", borderColor: "divider" }}>
-          <Stack spacing={1}>
-            <Stack direction="row" justifyContent="space-between">
-              <Typography variant="body2" color="text.secondary">
-                Прогрес тренування
-              </Typography>
-              <Typography variant="body2" fontWeight={700}>
-                {status.progress.percentage.toFixed(1)}%
-              </Typography>
-            </Stack>
-            <LinearProgress variant="determinate" value={status.progress.percentage} />
-          </Stack>
-        </Paper>
-      )}
-
       <Paper elevation={1} sx={{ p: 2, mb: 3 }}>
         <Grid container spacing={2}>
           <Grid item xs={12} sm={6} md={3}>
@@ -775,9 +1181,9 @@ const TrainingMetrics: React.FC = () => {
             <Typography variant="body2" color="text.secondary">
               Mean Normalized Reward/Step
             </Typography>
-            <Typography variant="h6">{formatNumber(invertForDisplay(kpis.meanReward), 2)}</Typography>
+            <Typography variant="h6">{rewardValueLabel(kpis.meanReward)}</Typography>
             <Typography variant="caption" color="text.secondary">
-              Нормалізовано на кількість кроків епізоду (зі зміненим знаком)
+              Показано без від’ємного знака.
             </Typography>
           </Grid>
           <Grid item xs={12} sm={6} md={3}>
@@ -785,7 +1191,7 @@ const TrainingMetrics: React.FC = () => {
               Best Normalized Reward/Step
             </Typography>
             <Typography variant="h6" color="success.main">
-              {formatNumber(invertForDisplay(kpis.bestReward), 2)}
+              {rewardValueLabel(kpis.bestReward)}
             </Typography>
           </Grid>
           <Grid item xs={12} sm={6} md={3}>
@@ -822,17 +1228,36 @@ const TrainingMetrics: React.FC = () => {
           </Grid>
           <Grid item xs={12} sm={6} md={3}>
             <Typography variant="body2" color="text.secondary">
-              Час з початку
+              Тривалість навчання
             </Typography>
-            <Typography variant="h6">{status?.timing?.elapsed_hms || "-"}</Typography>
-          </Grid>
-          <Grid item xs={12} sm={6} md={3}>
-            <Typography variant="body2" color="text.secondary">
-              ETA
-            </Typography>
-            <Typography variant="h6">{status?.timing?.estimated_remaining_hms || "-"}</Typography>
+            <Typography variant="h6">{trainingDurationMinutes}</Typography>
           </Grid>
         </Grid>
+      </Paper>
+
+      <Paper elevation={0} sx={{ p: 2, mb: 3, border: "1px solid", borderColor: "divider" }}>
+        <Stack spacing={1}>
+          <Typography variant="subtitle1" fontWeight={700}>
+            Розмірності середовища
+          </Typography>
+          <Typography variant="body2">
+            Поточна БД: state_dim={datasetDimensions?.current_db?.state_dim ?? "-"}, action_dim=
+            {datasetDimensions?.current_db?.action_dim ?? "-"}
+          </Typography>
+          <Typography variant="body2">
+            Поточний датасет ({selectedDatasetName}): state_dim={datasetDimensions?.dataset?.state_dim ?? "-"},
+            action_dim={datasetDimensions?.dataset?.action_dim ?? "-"}
+          </Typography>
+          <Typography variant="caption" color="text.secondary">
+            raw_action_dim БД: {datasetDimensions?.current_db?.raw_action_dim ?? "-"}; raw_action_dim датасету: {" "}
+            {datasetDimensions?.dataset?.raw_action_dim ?? "-"}; sample_case: {datasetDimensions?.dataset?.sample_case || "-"}
+          </Typography>
+          {(datasetDimensionsError || (datasetDimensions && (!datasetDimensions.dataset.found || datasetDimensions.dataset.error))) && (
+            <Alert severity="warning" sx={{ mt: 1 }}>
+              {datasetDimensionsError || datasetDimensions?.dataset?.error || "Датасет не знайдено або не вдалося обчислити розмірності"}
+            </Alert>
+          )}
+        </Stack>
       </Paper>
 
       <Card sx={{ mb: 3 }}>
@@ -869,21 +1294,11 @@ const TrainingMetrics: React.FC = () => {
             </Grid>
             <Grid item xs={12} sm={6} md={3}>
               <Typography variant="body2" color="text.secondary">
-                Runtime
+                Training Duration
               </Typography>
-              <Typography variant="subtitle1">
-                {status?.session_summary?.runtime_hms || status?.timing?.elapsed_hms || "00:00:00"}
-              </Typography>
+              <Typography variant="subtitle1">{trainingDurationMinutes}</Typography>
             </Grid>
-            <Grid item xs={12} md={8}>
-              <Typography variant="body2" color="text.secondary">
-                Dataset Manifest
-              </Typography>
-              <Typography variant="subtitle2" sx={{ wordBreak: "break-all" }}>
-                {status?.session_summary?.dataset_manifest || "-"}
-              </Typography>
-            </Grid>
-            <Grid item xs={12} md={4}>
+            <Grid item xs={12} md={6}>
               <Typography variant="body2" color="text.secondary">
                 Best Checkpoint
               </Typography>
@@ -892,6 +1307,12 @@ const TrainingMetrics: React.FC = () => {
                   ? `${status.session_summary.best_checkpoint.checkpoint_id} (reward ${status.session_summary.best_checkpoint.best_reward.toFixed(2)})`
                   : "-"}
               </Typography>
+            </Grid>
+            <Grid item xs={12} md={6}>
+              <Typography variant="body2" color="text.secondary">
+                Current Status
+              </Typography>
+              <Typography variant="subtitle2">{status?.status || "-"}</Typography>
             </Grid>
           </Grid>
         </CardContent>
@@ -915,6 +1336,83 @@ const TrainingMetrics: React.FC = () => {
               />
             )}
           </Stack>
+
+          <Paper elevation={0} sx={{ p: 2, mb: 2, border: "1px solid", borderColor: "divider" }}>
+            <Stack spacing={1.5}>
+              <Stack
+                direction={{ xs: "column", sm: "row" }}
+                justifyContent="space-between"
+                alignItems={{ xs: "flex-start", sm: "center" }}
+                spacing={1}
+              >
+                <Box>
+                  <Typography variant="subtitle1" fontWeight={700}>
+                    PPO Гіперпараметри
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Параметри впливають на новий запуск і на live update активного тренування.
+                  </Typography>
+                </Box>
+                <Chip
+                  size="small"
+                  label={presetJob?.status === "running" ? "Live update доступний" : "Live update неактивний"}
+                  color={presetJob?.status === "running" ? "success" : "default"}
+                  variant="outlined"
+                />
+              </Stack>
+
+              <Grid container spacing={2}>
+                <Grid item xs={12} sm={4}>
+                  <TextField
+                    fullWidth
+                    label="Learning Rate"
+                    type="number"
+                    value={trainingHyperparameters.learning_rate}
+                    onChange={(e) => handleHyperparameterChange("learning_rate", e.target.value)}
+                    inputProps={{ step: 0.0001, min: 0.000001, max: 0.1 }}
+                    disabled={presetSubmitting || hyperparameterSubmitting}
+                  />
+                </Grid>
+                <Grid item xs={12} sm={4}>
+                  <TextField
+                    fullWidth
+                    label="Gamma (γ)"
+                    type="number"
+                    value={trainingHyperparameters.gamma}
+                    onChange={(e) => handleHyperparameterChange("gamma", e.target.value)}
+                    inputProps={{ step: 0.01, min: 0.9, max: 1 }}
+                    disabled={presetSubmitting || hyperparameterSubmitting}
+                  />
+                </Grid>
+                <Grid item xs={12} sm={4}>
+                  <TextField
+                    fullWidth
+                    label="Epsilon (ε)"
+                    type="number"
+                    value={trainingHyperparameters.epsilon}
+                    onChange={(e) => handleHyperparameterChange("epsilon", e.target.value)}
+                    inputProps={{ step: 0.01, min: 0.05, max: 0.5 }}
+                    disabled={presetSubmitting || hyperparameterSubmitting}
+                  />
+                </Grid>
+              </Grid>
+
+              <Typography variant="caption" color="text.secondary">
+                Поточні активні значення: LR={formatNumber(normalizedHyperparameters.learningRate, 6)}, Gamma=
+                {formatNumber(normalizedHyperparameters.gamma, 3)}, Epsilon={formatNumber(normalizedHyperparameters.epsilon, 3)}
+              </Typography>
+
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+                <Button
+                  variant="outlined"
+                  onClick={handleApplyHyperparameters}
+                  disabled={hyperparameterSubmitting || presetJob?.status !== "running"}
+                >
+                  {hyperparameterSubmitting ? "Applying..." : "Apply to running job"}
+                </Button>
+              </Stack>
+            </Stack>
+          </Paper>
 
           <Grid container spacing={2} alignItems="center">
             <Grid item xs={12} sm={4} md={3}>
@@ -1022,6 +1520,17 @@ const TrainingMetrics: React.FC = () => {
             </Alert>
           )}
 
+          {hyperparameterInfo && (
+            <Alert severity="success" sx={{ mt: 2 }}>
+              {hyperparameterInfo}
+            </Alert>
+          )}
+          {hyperparameterError && (
+            <Alert severity="error" sx={{ mt: 2 }}>
+              {hyperparameterError}
+            </Alert>
+          )}
+
           {presetJob && (
             <Box mt={2}>
               <Typography variant="subtitle2" color="text.secondary" gutterBottom>
@@ -1107,9 +1616,9 @@ const TrainingMetrics: React.FC = () => {
           </Typography>
 
           <Grid container spacing={2}>
-            <Grid item xs={12} lg={4}>
+            <Grid item xs={12}>
               <Typography variant="subtitle2" gutterBottom>
-                Model Versions ({modelVersions.length})
+                Model Versions ({recentModelVersions.length} of {modelVersions.length})
               </Typography>
               <Box sx={{ overflowX: "auto" }}>
                 <Table size="small">
@@ -1121,82 +1630,18 @@ const TrainingMetrics: React.FC = () => {
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {modelVersions.slice(0, 8).map((model) => (
+                    {recentModelVersions.map((model) => (
                       <TableRow key={model.name}>
-                        <TableCell>{model.name}</TableCell>
+                        <TableCell title={model.name} sx={{ maxWidth: 320, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                          {model.name.replace(/^actor_critic_/, "")}
+                        </TableCell>
                         <TableCell>{model.is_active ? "Yes" : "No"}</TableCell>
                         <TableCell>{formatDateTime(model.updated_at)}</TableCell>
                       </TableRow>
                     ))}
-                    {modelVersions.length === 0 && (
+                    {recentModelVersions.length === 0 && (
                       <TableRow>
                         <TableCell colSpan={3}>Немає збережених версій</TableCell>
-                      </TableRow>
-                    )}
-                  </TableBody>
-                </Table>
-              </Box>
-            </Grid>
-
-            <Grid item xs={12} lg={4}>
-              <Typography variant="subtitle2" gutterBottom>
-                Checkpoints ({checkpoints.length})
-              </Typography>
-              <Box sx={{ overflowX: "auto" }}>
-                <Table size="small">
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>ID</TableCell>
-                      <TableCell>Iter</TableCell>
-                      <TableCell>Best Reward</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {checkpoints.slice(0, 8).map((checkpoint) => (
-                      <TableRow key={checkpoint.checkpoint_id}>
-                        <TableCell>{checkpoint.checkpoint_id}</TableCell>
-                        <TableCell>{checkpoint.iteration}</TableCell>
-                        <TableCell>{Number(checkpoint.best_reward || 0).toFixed(2)}</TableCell>
-                      </TableRow>
-                    ))}
-                    {checkpoints.length === 0 && (
-                      <TableRow>
-                        <TableCell colSpan={3}>Немає checkpoint-ів</TableCell>
-                      </TableRow>
-                    )}
-                  </TableBody>
-                </Table>
-              </Box>
-            </Grid>
-
-            <Grid item xs={12} lg={4}>
-              <Typography variant="subtitle2" gutterBottom>
-                Training Sessions ({trainingSessions.length})
-              </Typography>
-              <Box sx={{ overflowX: "auto" }}>
-                <Table size="small">
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>Session</TableCell>
-                      <TableCell>Status</TableCell>
-                      <TableCell>Model</TableCell>
-                      <TableCell>Dataset</TableCell>
-                      <TableCell>Start</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {trainingSessions.slice(0, 8).map((session) => (
-                      <TableRow key={session.session_id || session.file}>
-                        <TableCell>{session.session_id || session.file}</TableCell>
-                        <TableCell>{session.status || "-"}</TableCell>
-                        <TableCell>{session.model_version || "-"}</TableCell>
-                        <TableCell>{session.dataset_version || "-"}</TableCell>
-                        <TableCell>{formatDateTime(session.start_time)}</TableCell>
-                      </TableRow>
-                    ))}
-                    {trainingSessions.length === 0 && (
-                      <TableRow>
-                        <TableCell colSpan={5}>Немає сесій навчання</TableCell>
                       </TableRow>
                     )}
                   </TableBody>
@@ -1211,19 +1656,11 @@ const TrainingMetrics: React.FC = () => {
         <Grid item xs={12} lg={6}>
           <Card>
             <CardContent>
-              <Typography variant="h6" gutterBottom>
-                Policy Loss Curve
-              </Typography>
-              <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={policyLossChartData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="episode" />
-                  <YAxis />
-                  <Tooltip />
-                  <Legend />
-                  <Line type="monotone" dataKey="policyLoss" name="Policy Loss" stroke="#0d47a1" strokeWidth={2} dot={false} />
-                </LineChart>
-              </ResponsiveContainer>
+              <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={2} mb={2}>
+                <Typography variant="h6">Policy Loss Curve</Typography>
+                <Button size="small" onClick={() => setFullscreenChart("policy")}>На весь екран</Button>
+              </Stack>
+              {renderPolicyLossChart(300)}
             </CardContent>
           </Card>
         </Grid>
@@ -1231,37 +1668,11 @@ const TrainingMetrics: React.FC = () => {
         <Grid item xs={12} lg={6}>
           <Card>
             <CardContent>
-              <Typography variant="h6" gutterBottom>
-                Value Loss (Relative %)
-              </Typography>
-              <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={valueLossPercentChartData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="episode" />
-                  <YAxis unit="%" />
-                  <Tooltip formatter={(value: number | string) => `${Number(value).toFixed(2)}%`} />
-                  <Legend />
-                  <Line
-                    type="monotone"
-                    dataKey="valueLossPercent"
-                    name="Value Loss (%)"
-                    stroke="#1976d2"
-                    strokeWidth={2}
-                    dot={false}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="totalLossPercent"
-                    name="Total Loss (%)"
-                    stroke="#42a5f5"
-                    strokeWidth={2}
-                    dot={false}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-              <Typography variant="caption" color="text.secondary">
-                100% = значення на першому доступному епізоді (для зручного порівняння динаміки).
-              </Typography>
+              <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={2} mb={2}>
+                <Typography variant="h6">Training Loss</Typography>
+                <Button size="small" onClick={() => setFullscreenChart("loss")}>На весь екран</Button>
+              </Stack>
+              {renderLossChart(300)}
             </CardContent>
           </Card>
         </Grid>
@@ -1269,36 +1680,11 @@ const TrainingMetrics: React.FC = () => {
         <Grid item xs={12} lg={6}>
           <Card>
             <CardContent>
-              <Typography variant="h6" gutterBottom>
-                Mean Reward per Episode
-              </Typography>
-              <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={rewardComparisonData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="episode" />
-                  <YAxis />
-                  <Tooltip />
-                  <Legend />
-                  <Line
-                    type="monotone"
-                    dataKey="primaryReward"
-                    name={`Mean Reward • ${selectedModelVersion || "selected"}`}
-                    stroke="#1565c0"
-                    strokeWidth={2.5}
-                    dot={false}
-                  />
-                  {compareModelVersion && (
-                    <Line
-                      type="monotone"
-                      dataKey="compareReward"
-                      name={`Mean Reward • ${compareModelVersion}`}
-                      stroke="#ef6c00"
-                      strokeWidth={2.5}
-                      dot={false}
-                    />
-                  )}
-                </LineChart>
-              </ResponsiveContainer>
+              <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={2} mb={2}>
+                <Typography variant="h6">Mean Reward per Episode</Typography>
+                <Button size="small" onClick={() => setFullscreenChart("reward")}>На весь екран</Button>
+              </Stack>
+              {renderRewardChart(300)}
             </CardContent>
           </Card>
         </Grid>
@@ -1306,36 +1692,11 @@ const TrainingMetrics: React.FC = () => {
         <Grid item xs={12} lg={6}>
           <Card>
             <CardContent>
-              <Typography variant="h6" gutterBottom>
-                Completion Rate over Time
-              </Typography>
-              <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={completionComparisonData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="episode" />
-                  <YAxis domain={[0, 100]} />
-                  <Tooltip />
-                  <Legend />
-                  <Line
-                    type="monotone"
-                    dataKey="primaryCompletion"
-                    name={`Completion • ${selectedModelVersion || "selected"}`}
-                    stroke="#64b5f6"
-                    strokeWidth={2}
-                    dot={false}
-                  />
-                  {compareModelVersion && (
-                    <Line
-                      type="monotone"
-                      dataKey="compareCompletion"
-                      name={`Completion • ${compareModelVersion}`}
-                      stroke="#ef6c00"
-                      strokeWidth={2}
-                      dot={false}
-                    />
-                  )}
-                </LineChart>
-              </ResponsiveContainer>
+              <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={2} mb={2}>
+                <Typography variant="h6">Completion Rate over Time</Typography>
+                <Button size="small" onClick={() => setFullscreenChart("completion")}>На весь екран</Button>
+              </Stack>
+              {renderCompletionChart(300)}
               {!dashboardData.some((point) => typeof point.completionRate === "number") && (
                 <Typography variant="caption" color="text.secondary">
                   Для цього режиму завершеність епізодів недоступна.
@@ -1345,81 +1706,36 @@ const TrainingMetrics: React.FC = () => {
           </Card>
         </Grid>
 
-        <Grid item xs={12} lg={6}>
+        <Grid item xs={12}>
           <Card>
             <CardContent>
-              <Typography variant="h6" gutterBottom>
-                Hard Conflicts over Time
-              </Typography>
-              <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={hardConflictsComparisonData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="episode" />
-                  <YAxis allowDecimals={false} />
-                  <Tooltip />
-                  <Legend />
-                  <Line
-                    type="monotone"
-                    dataKey="primaryHardConflicts"
-                    name={`Hard Conflicts • ${selectedModelVersion || "selected"}`}
-                    stroke="#ef5350"
-                    strokeWidth={2}
-                    dot={false}
-                  />
-                  {compareModelVersion && (
-                    <Line
-                      type="monotone"
-                      dataKey="compareHardConflicts"
-                      name={`Hard Conflicts • ${compareModelVersion}`}
-                      stroke="#8d6e63"
-                      strokeWidth={2}
-                      dot={false}
-                    />
-                  )}
-                </LineChart>
-              </ResponsiveContainer>
+              <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={2} mb={2}>
+                <Typography variant="h6">Successful Generations Trend</Typography>
+                <Button size="small" onClick={() => setFullscreenChart("success")}>На весь екран</Button>
+              </Stack>
+              {renderSuccessChart(300)}
             </CardContent>
           </Card>
         </Grid>
+      </Grid>
 
-        <Grid item xs={12} lg={6}>
-          <Card>
-            <CardContent>
-              <Typography variant="h6" gutterBottom>
-                Successful Generations Trend
-              </Typography>
-              <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={dashboardData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="episode" />
-                  <YAxis yAxisId="rate" domain={[0, 100]} />
-                  <YAxis yAxisId="count" orientation="right" allowDecimals={false} />
-                  <Tooltip />
-                  <Legend />
-                  <Line
-                    yAxisId="rate"
-                    type="monotone"
-                    dataKey="successRate"
-                    name="Success Rate (%)"
-                    stroke="#2e7d32"
-                    strokeWidth={2}
-                    dot={false}
-                  />
-                  <Line
-                    yAxisId="count"
-                    type="monotone"
-                    dataKey="successfulGenerations"
-                    name="Successful Generations"
-                    stroke="#66bb6a"
-                    strokeWidth={2}
-                    dot={false}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
-        </Grid>
+      <Dialog open={Boolean(fullscreenChart)} onClose={() => setFullscreenChart(null)} fullWidth maxWidth="xl">
+        <DialogTitle>{fullscreenChart ? getChartTitle(fullscreenChart) : ""}</DialogTitle>
+        <DialogContent dividers sx={{ height: "calc(100vh - 160px)", p: 2 }}>
+          <Box sx={{ width: "100%", height: "100%" }}>
+            {fullscreenChart === "policy" && renderPolicyLossChart(620)}
+            {fullscreenChart === "loss" && renderLossChart(620)}
+            {fullscreenChart === "reward" && renderRewardChart(620)}
+            {fullscreenChart === "completion" && renderCompletionChart(620)}
+            {fullscreenChart === "success" && renderSuccessChart(620)}
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setFullscreenChart(null)}>Закрити</Button>
+        </DialogActions>
+      </Dialog>
 
+      <Grid container spacing={3}>
         <Grid item xs={12}>
           <Card>
             <CardContent>
@@ -1507,7 +1823,7 @@ const TrainingMetrics: React.FC = () => {
                               }}
                             >
                               <Typography variant="caption" color="text.secondary">
-                                {cell.day_label}, пара {cell.period}
+                                {cell.day_label}, урок {cell.period}
                               </Typography>
                               <Typography variant="h6" color="primary.main">
                                 {cell.count}
@@ -1532,7 +1848,7 @@ const TrainingMetrics: React.FC = () => {
                           <TableCell>Група</TableCell>
                           <TableCell>Аудиторія</TableCell>
                           <TableCell>День</TableCell>
-                          <TableCell>Пара</TableCell>
+                          <TableCell>Урок</TableCell>
                           <TableCell>Час</TableCell>
                         </TableRow>
                       </TableHead>

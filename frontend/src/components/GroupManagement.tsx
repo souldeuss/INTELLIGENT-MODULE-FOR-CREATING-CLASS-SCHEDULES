@@ -22,6 +22,7 @@ import {
   CircularProgress,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
+import DownloadIcon from "@mui/icons-material/Download";
 import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
 import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
@@ -31,6 +32,7 @@ import {
   createGroup,
   updateGroup,
   deleteGroup,
+  exportGroupsCsv,
 } from "../services/api";
 
 interface Group {
@@ -41,9 +43,27 @@ interface Group {
   specialization: string;
 }
 
+const getFilenameFromDisposition = (
+  contentDisposition: string | undefined,
+  fallbackName: string
+) => {
+  if (!contentDisposition) {
+    return fallbackName;
+  }
+
+  const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    return decodeURIComponent(utf8Match[1]);
+  }
+
+  const basicMatch = contentDisposition.match(/filename="?([^";]+)"?/i);
+  return basicMatch?.[1] || fallbackName;
+};
+
 const GroupManagement: React.FC = () => {
   const [groups, setGroups] = useState<Group[]>([]);
   const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [openDialog, setOpenDialog] = useState(false);
   const [editingGroup, setEditingGroup] = useState<Group | null>(null);
   const [formData, setFormData] = useState({
@@ -168,6 +188,40 @@ const GroupManagement: React.FC = () => {
     }
   };
 
+  const handleExportCsv = async () => {
+    try {
+      setExporting(true);
+      const response = await exportGroupsCsv();
+
+      const fallbackName = `groups_${new Date().toISOString().slice(0, 10)}.csv`;
+      const filename = getFilenameFromDisposition(
+        response.headers["content-disposition"],
+        fallbackName
+      );
+
+      const blob =
+        response.data instanceof Blob
+          ? response.data
+          : new Blob([response.data], { type: "text/csv;charset=utf-8;" });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.click();
+      window.URL.revokeObjectURL(url);
+
+      setSnackbar({
+        open: true,
+        message: "CSV експорт груп виконано",
+        severity: "success",
+      });
+    } catch (err: any) {
+      setError(err.message || "Не вдалося експортувати групи");
+    } finally {
+      setExporting(false);
+    }
+  };
+
   if (loading) {
     return (
       <Box
@@ -196,6 +250,14 @@ const GroupManagement: React.FC = () => {
           </Typography>
         </Box>
         <Box display="flex" gap={1}>
+          <Button
+            variant="outlined"
+            startIcon={<DownloadIcon />}
+            onClick={handleExportCsv}
+            disabled={exporting}
+          >
+            {exporting ? "Експорт..." : "Експорт CSV"}
+          </Button>
           {groups.length > 0 && (
             <Button
               variant="outlined"

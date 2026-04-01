@@ -345,8 +345,8 @@ class EnhancedPPOTrainer:
             self.checkpoint_manager.warmup_step(self.optimizer)
             
             # === Collect rollout ===
-            (states, actions, rewards, log_probs, 
-             values, dones) = self._collect_rollout(state)
+            (states, actions, rewards, log_probs,
+             values, dones, valid_action_counts) = self._collect_rollout(state)
             
             state = self.env._get_compact_state()
             
@@ -365,7 +365,7 @@ class EnhancedPPOTrainer:
             
             # === PPO Update ===
             policy_loss, value_loss, entropy, clip_fraction, approx_kl = \
-                self._update_policy(states, actions, log_probs, returns, advantages)
+                self._update_policy(states, actions, log_probs, returns, advantages, valid_action_counts)
             
             # === Update LR ===
             episode_reward = rewards.sum().item()
@@ -529,24 +529,35 @@ class EnhancedPPOTrainer:
         log_probs_list = []
         values_list = []
         dones_list = []
+        valid_action_counts_list = []
         
         state = initial_state
         
         for _ in range(self.n_steps):
             state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-            
-            with torch.no_grad():
-                logits, value = self.model(state_tensor)
-                probs = torch.softmax(logits, dim=-1)
-                dist = torch.distributions.Categorical(probs)
-                action_idx = dist.sample()
-                log_prob = dist.log_prob(action_idx)
-            
+
             valid_actions = self.env.get_valid_actions()
             if not valid_actions:
                 break
+
+            # Limit valid actions by model action dimension and mask invalid logits.
+            max_model_actions = int(self.action_dim)
+            valid_count = min(len(valid_actions), max_model_actions)
+            if valid_count <= 0:
+                break
             
-            action_idx_int = action_idx.item() % len(valid_actions)
+            with torch.no_grad():
+                logits, value = self.model(state_tensor)
+                masked_logits = logits.clone()
+                if valid_count < masked_logits.size(-1):
+                    masked_logits[:, valid_count:] = -1e9
+
+                probs = torch.softmax(masked_logits, dim=-1)
+                dist = torch.distributions.Categorical(probs)
+                action_idx = dist.sample()
+                log_prob = dist.log_prob(action_idx)
+
+            action_idx_int = int(action_idx.item())
             action = valid_actions[action_idx_int]
             
             next_state, reward, done, info = self.env.step(action)
@@ -557,6 +568,7 @@ class EnhancedPPOTrainer:
             log_probs_list.append(log_prob)
             values_list.append(value.squeeze())
             dones_list.append(done)
+            valid_action_counts_list.append(valid_count)
             
             state = next_state
             
@@ -571,6 +583,7 @@ class EnhancedPPOTrainer:
                 torch.FloatTensor([]).to(self.device),
                 torch.FloatTensor([]).to(self.device),
                 torch.FloatTensor([]).to(self.device),
+                torch.LongTensor([]).to(self.device),
             )
         
         return (
@@ -580,6 +593,7 @@ class EnhancedPPOTrainer:
             torch.stack(log_probs_list).to(self.device),
             torch.stack(values_list).to(self.device),
             torch.FloatTensor(dones_list).to(self.device),
+            torch.LongTensor(valid_action_counts_list).to(self.device),
         )
     
     def _compute_gae(
@@ -620,6 +634,7 @@ class EnhancedPPOTrainer:
         old_log_probs: torch.Tensor,
         returns: torch.Tensor,
         advantages: torch.Tensor,
+        valid_action_counts: torch.Tensor,
     ) -> Tuple[float, float, float, float, float]:
         """
         PPO policy update with mini-batches.
@@ -661,10 +676,17 @@ class EnhancedPPOTrainer:
                 batch_old_log_probs = old_log_probs[batch_indices]
                 batch_returns = returns[batch_indices]
                 batch_advantages = advantages[batch_indices]
+                batch_valid_counts = valid_action_counts[batch_indices]
                 
                 # Forward pass
                 logits, values = self.model(batch_states)
-                probs = torch.softmax(logits, dim=-1)
+
+                # Mask invalid actions per sample to keep action/log-prob consistency.
+                action_positions = torch.arange(logits.size(-1), device=logits.device).unsqueeze(0)
+                invalid_mask = action_positions >= batch_valid_counts.unsqueeze(1)
+                masked_logits = logits.masked_fill(invalid_mask, -1e9)
+
+                probs = torch.softmax(masked_logits, dim=-1)
                 dist = torch.distributions.Categorical(probs)
                 
                 max_action = logits.size(-1) - 1

@@ -124,7 +124,7 @@ class Timeslot(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     day_of_week = Column(Integer, nullable=False)  # 0=ПН, 1=ВТ, ..., 4=ПТ
-    period_number = Column(Integer, nullable=False)  # 1-7 (номер пари)
+    period_number = Column(Integer, nullable=False)  # 1-10 (номер уроку)
     start_time = Column(Time, nullable=False)
     end_time = Column(Time, nullable=False)
     is_active = Column(Boolean, default=True)

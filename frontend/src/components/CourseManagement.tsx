@@ -23,6 +23,7 @@ import {
   Stack,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
+import DownloadIcon from "@mui/icons-material/Download";
 import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
 import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
@@ -31,6 +32,7 @@ import {
   createCourse,
   updateCourse,
   deleteCourse,
+  exportCoursesCsv,
 } from "../services/api";
 
 interface Course {
@@ -43,8 +45,26 @@ interface Course {
   difficulty?: number;
 }
 
+const getFilenameFromDisposition = (
+  contentDisposition: string | undefined,
+  fallbackName: string
+) => {
+  if (!contentDisposition) {
+    return fallbackName;
+  }
+
+  const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    return decodeURIComponent(utf8Match[1]);
+  }
+
+  const basicMatch = contentDisposition.match(/filename="?([^";]+)"?/i);
+  return basicMatch?.[1] || fallbackName;
+};
+
 const CourseManagement: React.FC = () => {
   const [courses, setCourses] = useState<Course[]>([]);
+  const [exporting, setExporting] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingCourse, setEditingCourse] = useState<Course | null>(null);
   const [formData, setFormData] = useState({
@@ -165,6 +185,39 @@ const CourseManagement: React.FC = () => {
     }
   };
 
+  const handleExportCsv = async () => {
+    try {
+      setExporting(true);
+      const response = await exportCoursesCsv();
+
+      const fallbackName = `courses_${new Date().toISOString().slice(0, 10)}.csv`;
+      const filename = getFilenameFromDisposition(
+        response.headers["content-disposition"],
+        fallbackName
+      );
+
+      const blob =
+        response.data instanceof Blob
+          ? response.data
+          : new Blob([response.data], { type: "text/csv;charset=utf-8;" });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.click();
+      window.URL.revokeObjectURL(url);
+
+      showSnackbar("CSV експорт курсів виконано", "success");
+    } catch (error: any) {
+      showSnackbar(
+        error.response?.data?.detail || "Помилка експорту курсів",
+        "error"
+      );
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <Box sx={{ p: 3 }}>
       <Box
@@ -184,6 +237,14 @@ const CourseManagement: React.FC = () => {
           </Typography>
         </Box>
         <Stack direction="row" spacing={2}>
+          <Button
+            variant="outlined"
+            startIcon={<DownloadIcon />}
+            onClick={handleExportCsv}
+            disabled={exporting}
+          >
+            {exporting ? "Експорт..." : "Експорт CSV"}
+          </Button>
           {courses.length > 0 && (
             <Button
               variant="outlined"

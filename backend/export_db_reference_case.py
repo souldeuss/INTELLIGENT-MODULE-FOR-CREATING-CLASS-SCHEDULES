@@ -89,6 +89,7 @@ def build_reference_case() -> Dict[str, Any]:
             course_teachers = list(getattr(course, "teachers", []) or [])
             course_groups = list(getattr(course, "groups", []) or [])
 
+            # Keep one lessons_pool entry per DB course to preserve compatible dimensions.
             teacher_code = course_teachers[0].code if course_teachers else fallback_teacher
             group_code = course_groups[0].code if course_groups else fallback_group
 

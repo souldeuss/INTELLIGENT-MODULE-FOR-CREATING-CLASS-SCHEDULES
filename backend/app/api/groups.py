@@ -1,5 +1,10 @@
 """Student Groups API."""
+import csv
+import io
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from typing import List
 
@@ -25,6 +30,28 @@ def create_group(group: StudentGroupCreate, db: Session = Depends(get_db)):
 @router.get("/", response_model=List[StudentGroupResponse])
 def list_groups(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     return db.query(StudentGroup).offset(skip).limit(limit).all()
+
+
+@router.get("/export/csv")
+def export_groups_csv(db: Session = Depends(get_db)):
+    groups = db.query(StudentGroup).order_by(StudentGroup.code.asc()).all()
+
+    buffer = io.StringIO()
+    buffer.write("Group Name,Short Name\n")
+    writer = csv.writer(buffer, quoting=csv.QUOTE_ALL, lineterminator="\n")
+
+    for group in groups:
+        writer.writerow([group.code, group.code])
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"groups_{timestamp}.csv"
+    csv_bytes = ("\ufeff" + buffer.getvalue()).encode("utf-8")
+
+    return Response(
+        content=csv_bytes,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/{group_id}", response_model=StudentGroupResponse)

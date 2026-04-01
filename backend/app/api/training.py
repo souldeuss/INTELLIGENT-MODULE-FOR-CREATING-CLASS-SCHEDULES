@@ -12,7 +12,7 @@ Endpoints:
 Автор: AI Research Engineer
 Дата: 2024-12-25
 """
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any, Tuple
@@ -23,12 +23,16 @@ import logging
 import subprocess
 import sys
 import re
+import os
 from uuid import uuid4
 
 from ..core.training_metrics import get_metrics_collector, TrainingMetricsCollector
 from ..core.checkpoint_manager import get_checkpoint_manager, CheckpointManager
 from ..core.training_visualizer import TrainingVisualizer
 from ..core.model_registry import get_active_model_name, list_model_versions, set_active_model_name
+from ..core.database_session import get_db
+from ..core.database_session import SessionLocal
+from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +133,218 @@ def _seconds_to_hms(total_seconds: float) -> str:
 
 def _workspace_root() -> Path:
     return Path(__file__).resolve().parents[3]
+
+
+def _extract_manifest_case_paths(entries: Any) -> List[str]:
+    if not isinstance(entries, list):
+        return []
+
+    paths: List[str] = []
+    for entry in entries:
+        if isinstance(entry, str) and entry.strip():
+            paths.append(entry.strip())
+            continue
+
+        if isinstance(entry, dict):
+            raw_path = entry.get("path")
+            if isinstance(raw_path, str) and raw_path.strip():
+                paths.append(raw_path.strip())
+
+    return paths
+
+
+def _build_case_dimensions_from_path(case_path: Path) -> Dict[str, int]:
+    from ..core.environment_v2 import TimetablingEnvironmentV2
+    from ..core.json_dataset import load_dataset_case
+
+    case = load_dataset_case(str(case_path))
+    env = TimetablingEnvironmentV2(
+        case.courses,
+        case.teachers,
+        case.groups,
+        case.classrooms,
+        case.timeslots,
+        course_teacher_map=case.course_teacher_map,
+        course_group_map=case.course_group_map,
+    )
+
+    raw_action_dim = env.n_courses * env.n_teachers * env.n_groups * env.n_classrooms * env.n_timeslots
+    action_dim = min(raw_action_dim, 4096)
+    return {
+        "state_dim": int(env.state_dim),
+        "action_dim": int(action_dim),
+        "raw_action_dim": int(raw_action_dim),
+    }
+
+
+def _build_dataset_dimensions(root: Path, dataset_name: str) -> Dict[str, Any]:
+    manifest_path = root / "data" / dataset_name / "dataset_manifest.json"
+    if not manifest_path.exists():
+        return {
+            "found": False,
+            "manifest_path": str(manifest_path),
+            "sample_case": None,
+            "state_dim": None,
+            "action_dim": None,
+            "raw_action_dim": None,
+            "error": "dataset_manifest.json not found",
+        }
+
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as file:
+            manifest = json.load(file)
+    except Exception as exc:
+        return {
+            "found": True,
+            "manifest_path": str(manifest_path),
+            "sample_case": None,
+            "state_dim": None,
+            "action_dim": None,
+            "raw_action_dim": None,
+            "error": f"Failed to read manifest: {exc}",
+        }
+
+    train_paths = _extract_manifest_case_paths(manifest.get("train") if isinstance(manifest, dict) else None)
+    test_paths = _extract_manifest_case_paths(manifest.get("test") if isinstance(manifest, dict) else None)
+    all_paths = train_paths + test_paths
+
+    if not all_paths:
+        return {
+            "found": True,
+            "manifest_path": str(manifest_path),
+            "sample_case": None,
+            "state_dim": None,
+            "action_dim": None,
+            "raw_action_dim": None,
+            "error": "No train/test case paths in manifest",
+        }
+
+    errors: List[str] = []
+    for rel_path in all_paths:
+        case_path = Path(rel_path)
+        if not case_path.is_absolute():
+            case_path = (root / rel_path).resolve()
+
+        if not case_path.exists():
+            errors.append(f"Case does not exist: {case_path}")
+            continue
+
+        try:
+            dims = _build_case_dimensions_from_path(case_path)
+            return {
+                "found": True,
+                "manifest_path": str(manifest_path),
+                "sample_case": str(case_path),
+                "state_dim": dims["state_dim"],
+                "action_dim": dims["action_dim"],
+                "raw_action_dim": dims["raw_action_dim"],
+                "error": None,
+            }
+        except Exception as exc:
+            errors.append(f"Failed to read {case_path}: {exc}")
+
+    return {
+        "found": True,
+        "manifest_path": str(manifest_path),
+        "sample_case": None,
+        "state_dim": None,
+        "action_dim": None,
+        "raw_action_dim": None,
+        "error": "; ".join(errors) if errors else "Failed to compute dataset dimensions",
+    }
+
+
+def _build_current_db_dimensions() -> Dict[str, int]:
+    from .schedule import _build_environment_dimensions
+
+    db = SessionLocal()
+    try:
+        return _build_environment_dimensions(db)
+    finally:
+        db.close()
+
+
+def _ensure_compatible_dataset_matches_current_db(
+    *,
+    root: Path,
+    dataset_name: str,
+    count: int,
+    seed: int,
+    train_ratio: float,
+) -> None:
+    max_attempts = 2
+    manifest_path = root / "data" / dataset_name / "dataset_manifest.json"
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            current_db_dims = _build_current_db_dimensions()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to build environment dimensions: {exc}")
+
+        dataset_dims = _build_dataset_dimensions(root, dataset_name)
+        dataset_state_dim = dataset_dims.get("state_dim")
+        dataset_action_dim = dataset_dims.get("action_dim")
+
+        dims_match = (
+            dataset_dims.get("found")
+            and isinstance(dataset_state_dim, int)
+            and isinstance(dataset_action_dim, int)
+            and dataset_state_dim == current_db_dims.get("state_dim")
+            and dataset_action_dim == current_db_dims.get("action_dim")
+        )
+
+        if dims_match:
+            try:
+                _validate_compatible_dataset_manifest(manifest_path, root)
+                return
+            except HTTPException as exc:
+                if attempt >= max_attempts:
+                    raise
+                logger.warning(
+                    "Compatible dataset validation failed on attempt %s/%s: %s. Regenerating dataset.",
+                    attempt,
+                    max_attempts,
+                    exc.detail,
+                )
+                _regenerate_compatible_dataset(
+                    root=root,
+                    dataset_name=dataset_name,
+                    count=count,
+                    seed=seed,
+                    train_ratio=train_ratio,
+                )
+                continue
+
+        if attempt >= max_attempts:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Compatible dataset dimensions still do not match current DB after regeneration. "
+                    f"Current DB: state_dim={current_db_dims.get('state_dim')}, action_dim={current_db_dims.get('action_dim')}; "
+                    f"Dataset: state_dim={dataset_state_dim}, action_dim={dataset_action_dim}."
+                ),
+            )
+
+        logger.info(
+            "Compatible dataset dims mismatch on attempt %s/%s. Regenerating dataset '%s'. "
+            "Current DB dims: state_dim=%s, action_dim=%s; Dataset dims: state_dim=%s, action_dim=%s",
+            attempt,
+            max_attempts,
+            dataset_name,
+            current_db_dims.get("state_dim"),
+            current_db_dims.get("action_dim"),
+            dataset_state_dim,
+            dataset_action_dim,
+        )
+        _regenerate_compatible_dataset(
+            root=root,
+            dataset_name=dataset_name,
+            count=count,
+            seed=seed,
+            train_ratio=train_ratio,
+        )
 
 
 def _build_best_checkpoint_summary(checkpoint_mgr: CheckpointManager) -> Optional[Dict[str, Any]]:
@@ -290,7 +506,8 @@ def _build_history_from_legacy(legacy_data: Dict[str, Any]) -> Dict[str, List[An
     total_loss: List[Optional[float]] = []
     for policy_loss, value_loss in zip(actor_losses, critic_losses):
         if isinstance(policy_loss, (int, float)) and isinstance(value_loss, (int, float)):
-            total_loss.append(float(policy_loss) + float(value_loss))
+            # Align legacy reconstruction with PPO objective scale used in training.
+            total_loss.append(float(policy_loss) + 0.5 * float(value_loss))
         else:
             total_loss.append(None)
 
@@ -683,7 +900,7 @@ class ModelTrainingRequest(BaseModel):
     iterations: int = Field(100, ge=10, le=10000)
     seed: int = Field(42)
     train_ratio: float = Field(0.8, gt=0.0, lt=1.0)
-    dataset_size_mode: str = Field("100", description="100 | 1000 | compatible_100 | compatible_1000 | custom")
+    dataset_size_mode: str = Field("compatible_100", description="100 | 1000 | compatible_100 | compatible_1000 | custom")
     custom_case_count: Optional[int] = Field(None, ge=2, le=10000)
     dataset_name: Optional[str] = Field(None)
     device: str = Field("cpu")
@@ -750,6 +967,16 @@ def _safe_len_list(value: Any) -> int:
     return len(value) if isinstance(value, list) else 0
 
 
+def _sha256_file(path: Path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with open(path, "rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _validate_compatible_dataset_manifest(manifest_path: Path, root: Path) -> None:
     """Validate that compatible datasets are actually DB-reference compatible."""
     try:
@@ -771,6 +998,27 @@ def _validate_compatible_dataset_manifest(manifest_path: Path, root: Path) -> No
                 f"Expected metadata.compatible_template='{expected_template}', got '{template}'. "
                 "Regenerate with backend/generate_compatible_datasets.py using --reference-case data/db_reference_case.json "
                 "or run backend/auto_compatible_pipeline.py."
+            ),
+        )
+
+    reference_case_path = root / expected_template
+    if not reference_case_path.exists():
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Current DB reference case is missing. "
+                "Regenerate with backend/export_db_reference_case.py before training."
+            ),
+        )
+
+    expected_ref_hash = _sha256_file(reference_case_path)
+    manifest_ref_hash = metadata.get("reference_sha256")
+    if manifest_ref_hash != expected_ref_hash:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Compatible dataset is stale relative to current DB reference case. "
+                "Regenerate compatible dataset from current DB and retry."
             ),
         )
 
@@ -835,6 +1083,67 @@ def _validate_compatible_dataset_manifest(manifest_path: Path, root: Path) -> No
         )
 
 
+def _regenerate_compatible_dataset(
+    *,
+    root: Path,
+    dataset_name: str,
+    count: int,
+    seed: int,
+    train_ratio: float,
+) -> None:
+    reference_case_rel = "data/db_reference_case.json"
+    env = os.environ.copy()
+    if not env.get("DATABASE_URL"):
+        db_path = (root / "backend" / "timetabling.db").resolve()
+        env["DATABASE_URL"] = f"sqlite:///{db_path.as_posix()}"
+
+    commands: List[List[str]] = [
+        [
+            sys.executable,
+            "backend/export_db_reference_case.py",
+            "--output",
+            reference_case_rel,
+        ],
+        [
+            sys.executable,
+            "backend/generate_compatible_datasets.py",
+            "--workspace-root",
+            str(root),
+            "--reference-case",
+            reference_case_rel,
+            "--dataset-name",
+            dataset_name,
+            "--count",
+            str(count),
+            "--seed",
+            str(seed),
+            "--train-ratio",
+            str(train_ratio),
+        ],
+    ]
+
+    for command in commands:
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=str(root),
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            if completed.stdout:
+                logger.info(completed.stdout.strip())
+        except subprocess.CalledProcessError as exc:
+            stderr = (exc.stderr or "").strip()
+            stdout = (exc.stdout or "").strip()
+            detail = stderr or stdout or str(exc)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to regenerate compatible dataset: {detail}",
+            )
+
+
 def _start_model_training_job(payload: ModelTrainingRequest) -> Dict[str, Any]:
     from dataset_generator import generate_dataset_package
 
@@ -848,6 +1157,17 @@ def _start_model_training_job(payload: ModelTrainingRequest) -> Dict[str, Any]:
     manifest_path = root / "data" / dataset_name / "dataset_manifest.json"
 
     if dataset_mode in {"compatible_100", "compatible_1000"}:
+        # Algorithm:
+        # 1) Compare current DB and dataset dimensions.
+        # 2) If mismatch -> regenerate compatible dataset.
+        # 3) Recheck dimensions and run training only when matched.
+        _ensure_compatible_dataset_matches_current_db(
+            root=root,
+            dataset_name=dataset_name,
+            count=case_count,
+            seed=payload.seed,
+            train_ratio=payload.train_ratio,
+        )
         if not manifest_path.exists():
             raise HTTPException(
                 status_code=400,
@@ -856,7 +1176,6 @@ def _start_model_training_job(payload: ModelTrainingRequest) -> Dict[str, Any]:
                     "Generate it first with backend/generate_compatible_datasets.py or switch dataset mode."
                 ),
             )
-        _validate_compatible_dataset_manifest(manifest_path, root)
     elif payload.regenerate_dataset or not manifest_path.exists():
         generate_dataset_package(
             workspace_root=root,
@@ -1106,7 +1425,15 @@ def _start_model_adaptation_job(payload: ModelAdaptRequest) -> Dict[str, Any]:
 
     dataset_name = (payload.dataset_name or "").strip()
     if not dataset_name:
-        raise HTTPException(status_code=400, detail="dataset_name must not be empty")
+        dataset_name = f"dataset_compatible_{int(payload.count)}"
+    if not dataset_name.startswith("dataset_compatible_"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Model adaptation accepts only compatible datasets aligned with current DB. "
+                "Use dataset_name like 'dataset_compatible_100' or 'dataset_compatible_1000'."
+            ),
+        )
 
     job_id = uuid4().hex
     logs_dir = root / "backend" / "training_metrics" / "preset_runs"
@@ -1332,6 +1659,28 @@ async def list_dataset_100_preset_jobs():
 async def get_dataset_100_preset_status(job_id: str):
     """Get status for a dataset-100 preset job."""
     return _read_dataset_100_preset_job(job_id)
+
+
+@router.get("/dataset-dimensions")
+def get_dataset_dimensions(
+    dataset_name: str = Query(..., description="Dataset name under data/"),
+    db: Session = Depends(get_db),
+):
+    from .schedule import _build_environment_dimensions
+
+    try:
+        current_db = _build_environment_dimensions(db)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to build environment dimensions: {exc}")
+
+    dataset = _build_dataset_dimensions(_workspace_root(), dataset_name)
+    return {
+        "dataset_name": dataset_name,
+        "current_db": current_db,
+        "dataset": dataset,
+    }
 
 
 # === Metrics Endpoints ===

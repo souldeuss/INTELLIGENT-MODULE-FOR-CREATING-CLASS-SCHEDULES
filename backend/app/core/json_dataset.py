@@ -79,7 +79,7 @@ def _build_timeslots(periods_per_day: int) -> List[JsonTimeslot]:
     for day in range(5):
         current = start_dt
         for period in range(1, periods_per_day + 1):
-            end_dt = current + timedelta(minutes=80)
+            end_dt = current + timedelta(minutes=45)
             slots.append(
                 JsonTimeslot(
                     id=slot_id,

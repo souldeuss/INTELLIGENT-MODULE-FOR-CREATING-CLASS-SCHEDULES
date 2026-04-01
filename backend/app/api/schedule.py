@@ -1,8 +1,12 @@
 """Schedule Generation API."""
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
-from fastapi.responses import FileResponse
+import csv
+import io
+from collections import defaultdict
+
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query, UploadFile, File
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 import numpy as np
 import threading
 import logging
@@ -133,6 +137,202 @@ def _calculate_schedule_score(db: Session, scheduled_classes: List[ScheduledClas
         "hard_violations": int(teacher_conflicts + room_conflicts + group_conflicts),
         "soft_violations": int(capacity_issues),
     }
+
+
+def _build_lessons_export_rows(db: Session, scheduled_classes: List[ScheduledClass]) -> List[List[str]]:
+    """Build rows for lessons CSV template:
+    Teacher Names,Class Names,Subject Names,Room Names,No. of Lessons,Length.
+    """
+    if not scheduled_classes:
+        return []
+
+    teacher_ids = {item.teacher_id for item in scheduled_classes}
+    group_ids = {item.group_id for item in scheduled_classes}
+    course_ids = {item.course_id for item in scheduled_classes}
+    classroom_ids = {item.classroom_id for item in scheduled_classes}
+    timeslot_ids = {item.timeslot_id for item in scheduled_classes}
+
+    teachers = (
+        db.query(Teacher).filter(Teacher.id.in_(teacher_ids)).all() if teacher_ids else []
+    )
+    groups = (
+        db.query(StudentGroup).filter(StudentGroup.id.in_(group_ids)).all() if group_ids else []
+    )
+    courses = (
+        db.query(Course).filter(Course.id.in_(course_ids)).all() if course_ids else []
+    )
+    classrooms = (
+        db.query(Classroom).filter(Classroom.id.in_(classroom_ids)).all() if classroom_ids else []
+    )
+    timeslots = (
+        db.query(Timeslot).filter(Timeslot.id.in_(timeslot_ids)).all() if timeslot_ids else []
+    )
+
+    teacher_map = {item.id: item for item in teachers}
+    group_map = {item.id: item for item in groups}
+    course_map = {item.id: item for item in courses}
+    classroom_map = {item.id: item for item in classrooms}
+    timeslot_map = {item.id: item for item in timeslots}
+
+    periods_by_key: Dict[Tuple[str, str, str, str], Dict[int, List[int]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    lesson_counter: Dict[Tuple[str, str, str, str, int], int] = defaultdict(int)
+
+    for scheduled_class in scheduled_classes:
+        teacher = teacher_map.get(scheduled_class.teacher_id)
+        group = group_map.get(scheduled_class.group_id)
+        course = course_map.get(scheduled_class.course_id)
+        classroom = classroom_map.get(scheduled_class.classroom_id)
+        timeslot = timeslot_map.get(scheduled_class.timeslot_id)
+
+        teacher_name = teacher.full_name if teacher else f"Teacher {scheduled_class.teacher_id}"
+        class_name = group.code if group else f"Group {scheduled_class.group_id}"
+        subject_name = course.name if course else f"Course {scheduled_class.course_id}"
+        room_name = classroom.code if classroom else ""
+        key = (teacher_name, class_name, subject_name, room_name)
+
+        if not timeslot:
+            lesson_counter[(teacher_name, class_name, subject_name, room_name, 1)] += 1
+            continue
+
+        periods_by_key[key][timeslot.day_of_week].append(timeslot.period_number)
+
+    for key, day_periods in periods_by_key.items():
+        teacher_name, class_name, subject_name, room_name = key
+
+        for periods in day_periods.values():
+            sorted_periods = sorted(set(periods))
+            if not sorted_periods:
+                continue
+
+            current_length = 1
+            for idx in range(1, len(sorted_periods)):
+                if sorted_periods[idx] == sorted_periods[idx - 1] + 1:
+                    current_length += 1
+                else:
+                    lesson_counter[(teacher_name, class_name, subject_name, room_name, current_length)] += 1
+                    current_length = 1
+
+            lesson_counter[(teacher_name, class_name, subject_name, room_name, current_length)] += 1
+
+    rows: List[List[str]] = []
+    sorted_keys = sorted(
+        lesson_counter.keys(),
+        key=lambda item: (item[0].lower(), item[1].lower(), item[2].lower(), item[3].lower(), item[4]),
+    )
+
+    for teacher_name, class_name, subject_name, room_name, length in sorted_keys:
+        lessons_count = lesson_counter[(teacher_name, class_name, subject_name, room_name, length)]
+        rows.append(
+            [
+                teacher_name,
+                class_name,
+                subject_name,
+                room_name,
+                str(lessons_count),
+                str(length),
+            ]
+        )
+
+    return rows
+
+
+ASSIGNMENTS_TEMPLATE_HEADERS = [
+    "Teacher Names",
+    "Class Names",
+    "Subject Names",
+    "Room Names",
+    "No. of Lessons",
+    "Length",
+]
+
+
+def _normalize_lookup_value(value: str) -> str:
+    return " ".join(value.strip().lower().split())
+
+
+def _normalize_header_value(value: str) -> str:
+    return " ".join((value or "").replace("\ufeff", "").strip().lower().split())
+
+
+def _split_template_values(raw_value: str) -> List[str]:
+    if not raw_value:
+        return []
+    return [part.strip() for part in raw_value.split("&") if part and part.strip()]
+
+
+def _decode_csv_text(raw_bytes: bytes) -> Tuple[str, str]:
+    encodings = ["utf-8-sig", "utf-8", "cp1251", "windows-1251", "utf-16"]
+    for encoding in encodings:
+        try:
+            return raw_bytes.decode(encoding), encoding
+        except UnicodeDecodeError:
+            continue
+    raise HTTPException(status_code=400, detail="CSV encoding is not supported")
+
+
+def _build_csv_dict_reader(csv_text: str) -> Tuple[csv.DictReader, str]:
+    sample = csv_text[:8192]
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters=",;")
+        delimiter = dialect.delimiter
+    except csv.Error:
+        dialect = csv.excel
+        delimiter = ","
+
+    reader = csv.DictReader(io.StringIO(csv_text), dialect=dialect)
+    return reader, delimiter
+
+
+def _build_assignments_export_rows(db: Session) -> List[List[str]]:
+    """Build rows for assignments CSV template used by import."""
+    courses = db.query(Course).all()
+    rows: List[List[str]] = []
+
+    for course in courses:
+        if not course.teachers or not course.groups:
+            continue
+
+        teacher_names = " & ".join(
+            sorted({teacher.full_name for teacher in course.teachers if teacher.full_name})
+        )
+        class_names = " & ".join(
+            sorted(
+                {
+                    group.code[6:].strip()
+                    if group.code and group.code.lower().startswith("grade ")
+                    else (group.code or "").strip()
+                    for group in course.groups
+                    if group.code and group.code.strip()
+                }
+            )
+        )
+
+        room_names = ""
+        room_codes = {
+            item.classroom.code
+            for item in db.query(ScheduledClass).filter(ScheduledClass.course_id == course.id).all()
+            if item.classroom and item.classroom.code
+        }
+        if room_codes:
+            room_names = " & ".join(sorted(room_codes))
+
+        lessons_per_week = course.hours_per_week if course.hours_per_week and course.hours_per_week > 0 else 1
+
+        rows.append(
+            [
+                teacher_names,
+                class_names,
+                course.name,
+                room_names,
+                str(lessons_per_week),
+                "1",
+            ]
+        )
+
+    rows.sort(key=lambda row: (row[2].lower(), row[0].lower(), row[1].lower()))
+    return rows
 
 
 def _workspace_root() -> Path:
@@ -298,6 +498,31 @@ def _resolve_model_path(
     return candidates[0]
 
 
+def _find_compatible_model_candidate(
+    expected_state_dim: Optional[int],
+    expected_action_dim: Optional[int],
+) -> Optional[Path]:
+    if expected_state_dim is None or expected_action_dim is None:
+        return None
+
+    compatible_candidates: List[Path] = []
+    for model_dir in _candidate_model_dirs():
+        for candidate in model_dir.glob("actor_critic_*.pt"):
+            meta = _read_model_meta_dimensions_for_path(candidate)
+            if (
+                meta.get("meta_found")
+                and meta.get("state_dim") == expected_state_dim
+                and meta.get("action_dim") == expected_action_dim
+            ):
+                compatible_candidates.append(candidate)
+
+    if not compatible_candidates:
+        return None
+
+    compatible_candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return compatible_candidates[0]
+
+
 def _extract_model_run_id(model_version: str) -> Optional[str]:
     normalized = _normalize_model_name(model_version)
     stem = Path(normalized).stem
@@ -393,6 +618,23 @@ def _ensure_pretrained_model_loaded(trainer, model_version: str = None) -> None:
     loaded = trainer._try_load_pretrained()
     if loaded:
         return
+
+    fallback_candidate: Optional[Path] = None
+    if isinstance(expected_state_dim, int) and isinstance(expected_action_dim, int):
+        fallback_candidate = _find_compatible_model_candidate(expected_state_dim, expected_action_dim)
+
+    if fallback_candidate is not None:
+        normalized_requested = _normalize_model_name(model_version) if model_version else None
+        if normalized_requested != fallback_candidate.name:
+            logger.warning(
+                "⚠️ Обрана модель несумісна. Використовуємо сумісну модель: %s",
+                fallback_candidate.name,
+            )
+            trainer.model_version = fallback_candidate.name
+            if hasattr(trainer, "model_dir"):
+                trainer.model_dir = fallback_candidate.parent
+            if trainer._try_load_pretrained():
+                return
 
     if model_version:
         if not _model_exists_in_any_dir(model_version):
@@ -1465,6 +1707,44 @@ def export_schedule(description: str = "", db: Session = Depends(get_db)):
     }
 
 
+@router.get("/export/lessons/csv")
+def export_lessons_csv(db: Session = Depends(get_db)):
+    """Export lessons in CSV template format.
+
+    Template columns:
+    Teacher Names,Class Names,Subject Names,Room Names,No. of Lessons,Length
+    """
+    scheduled_classes = db.query(ScheduledClass).all()
+    if not scheduled_classes:
+        raise HTTPException(status_code=400, detail="No lessons to export")
+
+    rows = _build_lessons_export_rows(db, scheduled_classes)
+
+    output = io.StringIO()
+    writer = csv.writer(output, quoting=csv.QUOTE_ALL, lineterminator="\n")
+    writer.writerow(
+        [
+            "Teacher Names",
+            "Class Names",
+            "Subject Names",
+            "Room Names",
+            "No. of Lessons",
+            "Length",
+        ]
+    )
+    writer.writerows(rows)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"lessons_{timestamp}.csv"
+    csv_bytes = ("\ufeff" + output.getvalue()).encode("utf-8")
+
+    return Response(
+        content=csv_bytes,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.post("/import/{filename}")
 def import_schedule(filename: str, clear_existing: bool = True, db: Session = Depends(get_db)):
     """Імпортувати розклад з файлу."""
@@ -1628,6 +1908,242 @@ def create_assignment(
     return {"message": "Assignment created successfully"}
 
 
+@router.get("/assignments/export/csv")
+def export_assignments_csv(db: Session = Depends(get_db)):
+    """Експорт призначень курсів у CSV за шаблоном lessons CSV."""
+    rows = _build_assignments_export_rows(db)
+    if not rows:
+        raise HTTPException(status_code=400, detail="No assignments to export")
+
+    output = io.StringIO()
+    writer = csv.writer(output, quoting=csv.QUOTE_ALL, lineterminator="\n")
+    writer.writerow(ASSIGNMENTS_TEMPLATE_HEADERS)
+    writer.writerows(rows)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"assignments_{timestamp}.csv"
+    csv_bytes = ("\ufeff" + output.getvalue()).encode("utf-8")
+
+    return Response(
+        content=csv_bytes,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/assignments/import/csv")
+async def import_assignments_csv(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """Імпорт призначень курсів за шаблоном sample_lessons.csv."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="CSV file is required")
+
+    raw_bytes = await file.read()
+    if not raw_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded CSV is empty")
+
+    csv_text, detected_encoding = _decode_csv_text(raw_bytes)
+
+    reader, detected_delimiter = _build_csv_dict_reader(csv_text)
+    headers = [header.strip() for header in (reader.fieldnames or [])]
+    normalized_headers = [_normalize_header_value(header) for header in headers]
+    expected_headers = [_normalize_header_value(header) for header in ASSIGNMENTS_TEMPLATE_HEADERS]
+    if normalized_headers != expected_headers:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Invalid CSV header. Expected: "
+                + ", ".join(ASSIGNMENTS_TEMPLATE_HEADERS)
+            ),
+        )
+
+    courses = db.query(Course).all()
+    teachers = db.query(Teacher).all()
+    groups = db.query(StudentGroup).all()
+    classrooms = db.query(Classroom).all()
+
+    course_lookup: Dict[str, Course] = {}
+    for course in courses:
+        for alias in [course.name, course.code]:
+            normalized = _normalize_lookup_value(alias or "")
+            if normalized and normalized not in course_lookup:
+                course_lookup[normalized] = course
+
+    teacher_lookup: Dict[str, Teacher] = {}
+    for teacher in teachers:
+        for alias in [teacher.full_name, teacher.code]:
+            normalized = _normalize_lookup_value(alias or "")
+            if normalized and normalized not in teacher_lookup:
+                teacher_lookup[normalized] = teacher
+
+    group_lookup: Dict[str, StudentGroup] = {}
+    for group in groups:
+        aliases = [group.code, f"Grade {group.code}"]
+        if group.code.lower().startswith("grade "):
+            aliases.append(group.code[6:])
+        for alias in aliases:
+            normalized = _normalize_lookup_value(alias or "")
+            if normalized and normalized not in group_lookup:
+                group_lookup[normalized] = group
+
+    classroom_lookup: Dict[str, Classroom] = {}
+    for classroom in classrooms:
+        normalized = _normalize_lookup_value(classroom.code or "")
+        if normalized and normalized not in classroom_lookup:
+            classroom_lookup[normalized] = classroom
+
+    rows_total = 0
+    rows_imported = 0
+    teacher_links_created = 0
+    group_links_created = 0
+    duplicates_skipped = 0
+    ignored_schedule_fields_rows = 0
+    errors: List[str] = []
+    warnings: List[str] = []
+
+    if detected_encoding not in {"utf-8", "utf-8-sig"}:
+        warnings.append(
+            f"CSV decoded as {detected_encoding}; recommended encoding is UTF-8"
+        )
+    if detected_delimiter != ",":
+        warnings.append(f"CSV delimiter '{detected_delimiter}' detected and supported")
+
+    try:
+        for row_number, row in enumerate(reader, start=2):
+            teacher_raw = (row.get("Teacher Names") or "").strip()
+            class_raw = (row.get("Class Names") or "").strip()
+            subject_raw = (row.get("Subject Names") or "").strip()
+            room_raw = (row.get("Room Names") or "").strip()
+            lessons_raw = (row.get("No. of Lessons") or "").strip()
+            length_raw = (row.get("Length") or "").strip()
+
+            if not any([teacher_raw, class_raw, subject_raw, room_raw, lessons_raw, length_raw]):
+                continue
+
+            rows_total += 1
+
+            try:
+                lessons_count = int(lessons_raw)
+                lesson_length = int(length_raw)
+                if lessons_count <= 0 or lesson_length <= 0:
+                    raise ValueError()
+            except ValueError:
+                errors.append(
+                    f"Row {row_number}: 'No. of Lessons' and 'Length' must be positive integers"
+                )
+                continue
+
+            teacher_tokens = _split_template_values(teacher_raw)
+            class_tokens = _split_template_values(class_raw)
+            subject_tokens = _split_template_values(subject_raw)
+            room_tokens = _split_template_values(room_raw)
+
+            if not teacher_tokens or not class_tokens or not subject_tokens:
+                errors.append(
+                    f"Row {row_number}: 'Teacher Names', 'Class Names' and 'Subject Names' are required"
+                )
+                continue
+
+            resolved_teachers: List[Teacher] = []
+            resolved_groups: List[StudentGroup] = []
+            resolved_courses: List[Course] = []
+
+            missing_teachers: List[str] = []
+            missing_groups: List[str] = []
+            missing_courses: List[str] = []
+
+            seen_teacher_ids = set()
+            seen_group_ids = set()
+            seen_course_ids = set()
+
+            for token in teacher_tokens:
+                teacher = teacher_lookup.get(_normalize_lookup_value(token))
+                if not teacher:
+                    missing_teachers.append(token)
+                    continue
+                if teacher.id not in seen_teacher_ids:
+                    resolved_teachers.append(teacher)
+                    seen_teacher_ids.add(teacher.id)
+
+            for token in class_tokens:
+                group = group_lookup.get(_normalize_lookup_value(token))
+                if not group:
+                    missing_groups.append(token)
+                    continue
+                if group.id not in seen_group_ids:
+                    resolved_groups.append(group)
+                    seen_group_ids.add(group.id)
+
+            for token in subject_tokens:
+                course = course_lookup.get(_normalize_lookup_value(token))
+                if not course:
+                    missing_courses.append(token)
+                    continue
+                if course.id not in seen_course_ids:
+                    resolved_courses.append(course)
+                    seen_course_ids.add(course.id)
+
+            if missing_teachers or missing_groups or missing_courses:
+                missing_parts = []
+                if missing_teachers:
+                    missing_parts.append(f"teachers: {', '.join(missing_teachers)}")
+                if missing_groups:
+                    missing_parts.append(f"classes: {', '.join(missing_groups)}")
+                if missing_courses:
+                    missing_parts.append(f"subjects: {', '.join(missing_courses)}")
+
+                errors.append(f"Row {row_number}: unresolved entities -> {'; '.join(missing_parts)}")
+                continue
+
+            if room_tokens:
+                missing_rooms = []
+                for token in room_tokens:
+                    if _normalize_lookup_value(token) not in classroom_lookup:
+                        missing_rooms.append(token)
+                if missing_rooms:
+                    warnings.append(
+                        f"Row {row_number}: rooms not found (ignored for assignments): {', '.join(missing_rooms)}"
+                    )
+
+            for course in resolved_courses:
+                for teacher in resolved_teachers:
+                    if teacher in course.teachers:
+                        duplicates_skipped += 1
+                    else:
+                        course.teachers.append(teacher)
+                        teacher_links_created += 1
+
+                for group in resolved_groups:
+                    if group in course.groups:
+                        duplicates_skipped += 1
+                    else:
+                        course.groups.append(group)
+                        group_links_created += 1
+
+            rows_imported += 1
+            ignored_schedule_fields_rows += 1
+
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.error(f"❌ CSV assignment import failed: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to import assignments: {str(exc)}") from exc
+
+    return {
+        "message": "Assignments CSV imported",
+        "rows_total": rows_total,
+        "rows_imported": rows_imported,
+        "teacher_links_created": teacher_links_created,
+        "group_links_created": group_links_created,
+        "duplicates_skipped": duplicates_skipped,
+        "ignored_schedule_fields_rows": ignored_schedule_fields_rows,
+        "errors": errors,
+        "warnings": warnings,
+    }
+
+
 @router.delete("/assignments/{assignment_id}")
 def delete_assignment(
     assignment_id: int,
@@ -1664,6 +2180,10 @@ def delete_assignment(
 
 @router.post("/assignments/auto")
 def auto_assign_courses(
+    min_weekly_lessons_per_group: int = Query(10, ge=1, le=40),
+    teachers_per_course: int = Query(2, ge=1, le=3),
+    max_groups_per_course: int = Query(4, ge=1, le=20),
+    strict_teacher_load: bool = Query(True),
     db: Session = Depends(get_db)
 ):
     """Автоматичне AI-призначення курсів викладачам та групам.
@@ -1675,7 +2195,13 @@ def auto_assign_courses(
     4. Розподіл намагається бути збалансованим
     """
     try:
-        logger.info("🤖 Початок автоматичного AI-призначення...")
+        logger.info(
+            "🤖 Початок автоматичного AI-призначення... "
+            f"min_weekly={min_weekly_lessons_per_group}, "
+            f"teachers_per_course={teachers_per_course}, "
+            f"max_groups_per_course={max_groups_per_course}, "
+            f"strict_teacher_load={strict_teacher_load}"
+        )
         
         # Отримуємо всі сутності
         courses = db.query(Course).all()
@@ -1719,64 +2245,123 @@ def auto_assign_courses(
             5: [4]      # Найважчі тільки для 4 курсу
         }
         
-        # Словник для відстеження навантаження викладачів
-        teacher_load = {t.id: 0 for t in teachers}
-        
-        # Призначення викладачів до курсів
+        # Індекси для швидкого доступу
+        group_by_id = {g.id: g for g in groups}
+        course_groups: Dict[int, set] = {c.id: set() for c in courses}
+        group_hours: Dict[int, int] = {g.id: 0 for g in groups}
+
+        def _course_suitable_for_group(course: Course, group: StudentGroup) -> bool:
+            suitable_years = difficulty_to_year.get(course.difficulty, [1, 2, 3, 4])
+            return group.year in suitable_years
+
+        def _add_group_to_course(course: Course, group: StudentGroup) -> bool:
+            if group.id in course_groups[course.id]:
+                return False
+            if len(course_groups[course.id]) >= max_groups_per_course:
+                return False
+            course_groups[course.id].add(group.id)
+            group_hours[group.id] += max(1, int(course.hours_per_week or 0))
+            return True
+
+        # 1) Coverage-first: добираємо мінімум занять для кожної групи
+        unresolved_groups = []
+        for group in sorted(groups, key=lambda g: (g.year, g.code)):
+            safety_counter = 0
+            while group_hours[group.id] < min_weekly_lessons_per_group and safety_counter < len(courses) * 2:
+                safety_counter += 1
+                deficit = min_weekly_lessons_per_group - group_hours[group.id]
+
+                preferred_courses = [
+                    c
+                    for c in courses
+                    if _course_suitable_for_group(c, group)
+                    and group.id not in course_groups[c.id]
+                    and len(course_groups[c.id]) < max_groups_per_course
+                ]
+
+                fallback_courses = [
+                    c
+                    for c in courses
+                    if group.id not in course_groups[c.id]
+                    and len(course_groups[c.id]) < max_groups_per_course
+                ]
+
+                candidate_courses = preferred_courses if preferred_courses else fallback_courses
+                if not candidate_courses:
+                    break
+
+                # Кращий матч: ближче до дефіциту + менш перевантажений курс
+                candidate_courses.sort(
+                    key=lambda c: (
+                        abs(deficit - max(1, int(c.hours_per_week or 0))),
+                        len(course_groups[c.id]),
+                        c.difficulty,
+                    )
+                )
+
+                if not _add_group_to_course(candidate_courses[0], group):
+                    break
+
+            if group_hours[group.id] < min_weekly_lessons_per_group:
+                unresolved_groups.append(group.id)
+
+        # 2) Гарантуємо, що кожен курс має хоча б одну групу
         for course in courses:
-            suitable_teachers = []
-            course_name_lower = course.name.lower()
-            
-            # Знаходимо викладачів з відповідного департаменту
-            for teacher in teachers:
-                if not teacher.department:
-                    suitable_teachers.append(teacher)
+            if course_groups[course.id]:
+                continue
+            preferred_groups = [g for g in groups if _course_suitable_for_group(course, g)]
+            candidate_groups = preferred_groups if preferred_groups else groups
+            candidate_groups = sorted(candidate_groups, key=lambda g: (group_hours[g.id], g.year, g.code))
+            for group in candidate_groups:
+                if _add_group_to_course(course, group):
+                    break
+
+        # 3) Після груп - призначаємо викладачів з урахуванням навантаження
+        teacher_load: Dict[int, float] = {t.id: 0.0 for t in teachers}
+        teacher_capacity: Dict[int, float] = {
+            t.id: float(t.max_hours_per_week if (t.max_hours_per_week and t.max_hours_per_week > 0) else 10**9)
+            for t in teachers
+        }
+
+        for course in courses:
+            course_name_lower = (course.name or "").lower()
+            course_weekly_demand = max(1, int(course.hours_per_week or 0)) * max(1, len(course_groups[course.id]))
+
+            def _teacher_match_score(teacher: Teacher) -> tuple:
+                dept_keywords = department_subject_map.get(teacher.department, []) if teacher.department else []
+                matched = any(keyword in course_name_lower for keyword in dept_keywords)
+                utilization = teacher_load[teacher.id] / max(teacher_capacity[teacher.id], 1.0)
+                # Перевага: релевантний департамент + менша утилізація
+                return (0 if matched else 1, utilization, teacher_load[teacher.id])
+
+            ranked_teachers = sorted(teachers, key=_teacher_match_score)
+
+            selected_teachers: List[Teacher] = []
+            max_teacher_count = min(max(1, teachers_per_course), len(ranked_teachers))
+
+            for teacher in ranked_teachers:
+                if len(selected_teachers) >= max_teacher_count:
+                    break
+                projected_share = course_weekly_demand / float(len(selected_teachers) + 1)
+                projected_load = teacher_load[teacher.id] + projected_share
+                if strict_teacher_load and projected_load > teacher_capacity[teacher.id]:
                     continue
-                    
-                dept_keywords = department_subject_map.get(teacher.department, [])
-                
-                # Перевіряємо чи назва курсу містить ключові слова департаменту
-                if any(keyword in course_name_lower for keyword in dept_keywords):
-                    suitable_teachers.append(teacher)
-            
-            # Якщо не знайшли підходящих - беремо всіх
-            if not suitable_teachers:
-                suitable_teachers = teachers
-            
-            # Сортуємо викладачів за навантаженням (менш завантажені першими)
-            suitable_teachers.sort(key=lambda t: teacher_load[t.id])
-            
-            # Призначаємо 1-2 викладачів
-            num_teachers = min(2, len(suitable_teachers))
-            for i in range(num_teachers):
-                teacher = suitable_teachers[i]
+                selected_teachers.append(teacher)
+
+            if not selected_teachers:
+                # Fallback: мінімально завантажений викладач
+                selected_teachers = [min(ranked_teachers, key=lambda t: teacher_load[t.id])]
+
+            per_teacher_share = course_weekly_demand / float(len(selected_teachers))
+            for teacher in selected_teachers:
+                teacher_load[teacher.id] += per_teacher_share
                 if teacher not in course.teachers:
                     course.teachers.append(teacher)
-                    # Оновлюємо навантаження
-                    teacher_load[teacher.id] += course.hours_per_week
-        
-        # Призначення груп до курсів
-        for course in courses:
-            suitable_groups = []
-            
-            # Визначаємо підходящі групи за складністю курсу
-            suitable_years = difficulty_to_year.get(course.difficulty, [1, 2, 3, 4])
-            
-            for group in groups:
-                if group.year in suitable_years:
-                    suitable_groups.append(group)
-            
-            # Якщо не знайшли підходящих - беремо всі групи
-            if not suitable_groups:
-                suitable_groups = groups
-            
-            # Призначаємо 2-4 групи (або всі доступні)
-            import random
-            num_groups = min(random.randint(2, 4), len(suitable_groups))
-            selected_groups = random.sample(suitable_groups, num_groups)
-            
-            for group in selected_groups:
-                if group not in course.groups:
+
+            # Фактичне застосування груп до курсу
+            for group_id in sorted(course_groups[course.id]):
+                group = group_by_id.get(group_id)
+                if group and group not in course.groups:
                     course.groups.append(group)
                     assignments_count += 1
         
@@ -1784,21 +2369,38 @@ def auto_assign_courses(
         
         logger.info(f"✅ Автоматично створено {assignments_count} призначень")
         
+        groups_below_target = sum(1 for g in groups if group_hours[g.id] < min_weekly_lessons_per_group)
+
         # Статистика навантаження викладачів
         teacher_stats = [
             {
                 "teacher": t.full_name,
-                "hours": teacher_load[t.id],
+                "hours": round(float(teacher_load[t.id]), 2),
                 "max_hours": t.max_hours_per_week,
-                "utilization": round(teacher_load[t.id] / t.max_hours_per_week * 100, 1) if t.max_hours_per_week > 0 else 0
+                "utilization": round(float(teacher_load[t.id]) / t.max_hours_per_week * 100, 1) if t.max_hours_per_week > 0 else 0
             }
             for t in teachers
+        ]
+
+        group_stats = [
+            {
+                "group": g.code,
+                "year": g.year,
+                "assigned_hours": int(group_hours[g.id]),
+                "target_hours": int(min_weekly_lessons_per_group),
+                "missing_hours": max(0, int(min_weekly_lessons_per_group - group_hours[g.id])),
+            }
+            for g in sorted(groups, key=lambda grp: (grp.year, grp.code))
         ]
         
         return {
             "message": "AI-призначення успішно виконано",
             "assignments_created": assignments_count,
-            "teacher_stats": teacher_stats
+            "teacher_stats": teacher_stats,
+            "group_stats": group_stats,
+            "groups_below_target": int(groups_below_target),
+            "requested_min_weekly_lessons": int(min_weekly_lessons_per_group),
+            "unresolved_group_ids": unresolved_groups,
         }
         
     except HTTPException:

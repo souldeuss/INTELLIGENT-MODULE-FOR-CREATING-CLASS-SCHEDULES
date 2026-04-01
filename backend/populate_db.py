@@ -23,14 +23,14 @@ def create_timeslots():
     # Days of week: 0=Monday, 1=Tuesday, 2=Wednesday, 3=Thursday, 4=Friday
     days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
     
-    # Time periods (8:00 - 18:00, 6 periods per day)
+    # Time periods (45-minute lessons, 6 periods per day)
     periods = [
-        {"period": 1, "start": "08:00:00", "end": "09:30:00"},
-        {"period": 2, "start": "09:45:00", "end": "11:15:00"},
-        {"period": 3, "start": "11:30:00", "end": "13:00:00"},
-        {"period": 4, "start": "13:30:00", "end": "15:00:00"},
-        {"period": 5, "start": "15:15:00", "end": "16:45:00"},
-        {"period": 6, "start": "17:00:00", "end": "18:30:00"},
+        {"period": 1, "start": "08:30:00", "end": "09:15:00"},
+        {"period": 2, "start": "09:25:00", "end": "10:10:00"},
+        {"period": 3, "start": "10:20:00", "end": "11:05:00"},
+        {"period": 4, "start": "11:15:00", "end": "12:00:00"},
+        {"period": 5, "start": "12:10:00", "end": "12:55:00"},
+        {"period": 6, "start": "13:05:00", "end": "13:50:00"},
     ]
     
     for day_idx, day_name in enumerate(days):

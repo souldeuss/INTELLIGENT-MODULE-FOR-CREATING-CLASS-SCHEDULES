@@ -1,5 +1,10 @@
 """CRUD операції для Courses."""
+import csv
+import io
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from typing import List
 
@@ -30,6 +35,29 @@ def list_courses(skip: int = 0, limit: int = 100, db: Session = Depends(get_db))
     """Отримати список курсів."""
     courses = db.query(Course).offset(skip).limit(limit).all()
     return courses
+
+
+@router.get("/export/csv")
+def export_courses_csv(db: Session = Depends(get_db)):
+    """Експортувати курси в CSV (Subject Name, Short Name)."""
+    courses = db.query(Course).order_by(Course.code.asc()).all()
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, quoting=csv.QUOTE_ALL, lineterminator="\n")
+    writer.writerow(["Subject Name", "Short Name"])
+
+    for course in courses:
+        writer.writerow([course.name, course.code or ""])
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"courses_{timestamp}.csv"
+    csv_bytes = ("\ufeff" + buffer.getvalue()).encode("utf-8")
+
+    return Response(
+        content=csv_bytes,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/{course_id}", response_model=CourseResponse)

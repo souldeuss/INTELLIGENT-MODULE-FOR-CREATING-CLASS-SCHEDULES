@@ -56,14 +56,16 @@ class TimetablingEnvironmentV2:
     PENALTY_NO_LAB = -3.0               # Потрібна лабораторія, але немає
     PENALTY_DAY_VARIANCE = -2.0         # Штраф за високу дисперсію по днях
     PENALTY_IMBALANCED_SCHEDULE = -5.0  # Штраф за незбалансований розклад при завершенні
+    PENALTY_SKIP_EMPTY_DAY = -2.5       # Штраф за заповнення вже активного дня коли є порожні
+    PENALTY_EMPTY_DAY_AT_END = -6.0     # Штраф за порожні дні у фінальному розкладі
+    REWARD_FILL_EMPTY_DAY = 3.0         # Бонус за перше заняття у порожньому дні
     
     # === НАЛАШТУВАННЯ БАЛАНСУВАННЯ ===
     MAX_DAY_DEVIATION = 1               # Допустиме відхилення від target (±1 заняття)
     VARIANCE_THRESHOLD = 2.0            # Поріг дисперсії для termination
     DAY_BALANCE_ALPHA = 1.5             # Вага penalty за variance
     DAY_BALANCE_BETA = 1.0              # Вага penalty за відхилення від target
-    MIN_WEEKLY_LESSONS_PER_GROUP = 10   # Мінімум занять на тиждень для групи
-    PENALTY_BELOW_MIN_WEEKLY = -12.0    # Штраф за кожне заняття нижче мінімуму
+    EMPTY_DAY_BETA = 2.0                # Вага penalty за дефіцит активних днів
     PENALTY_GAP_HOUR = -1.5             # Штраф за "вікна" між парами в межах дня
     REWARD_CONSECUTIVE_LESSON = 1.0     # Бонус за суміжні пари
 
@@ -225,37 +227,17 @@ class TimetablingEnvironmentV2:
                     # Оновлюємо лічильник загальних занять для групи
                     self.group_total_lessons[group_idx] += hours
 
-        # Гарантуємо мінімум занять на тиждень для кожної групи,
-        # щоб розклад не був "порожнім".
-        for group_idx in range(self.n_groups):
-            current_total = int(self.group_total_lessons[group_idx])
-            if current_total >= self.MIN_WEEKLY_LESSONS_PER_GROUP:
-                continue
-
-            candidates = group_course_candidates.get(group_idx, [])
-            if not candidates:
-                continue
-
-            missing = self.MIN_WEEKLY_LESSONS_PER_GROUP - current_total
-            for i in range(missing):
-                extra_course_idx = candidates[i % len(candidates)]
-                self.pending_courses.append((extra_course_idx, group_idx))
-                self.group_total_lessons[group_idx] += 1
-                self.course_hours_remaining[extra_course_idx] += 1
-
-            logger.info(
-                f"➕ Group {self.groups[group_idx].code}: додано {missing} занять для досягнення мінімуму "
-                f"{self.MIN_WEEKLY_LESSONS_PER_GROUP}/тиждень"
-            )
-        
         # === ОБЧИСЛЕННЯ TARGET ЗАНЯТЬ НА ДЕНЬ ===
         # target = загальна кількість занять / 5 днів
         self.target_lessons_per_day = np.zeros(self.n_groups, dtype=np.float32)
+        self.target_active_days = np.zeros(self.n_groups, dtype=np.int32)
         for group_idx in range(self.n_groups):
             total = self.group_total_lessons[group_idx]
             self.target_lessons_per_day[group_idx] = total / 5.0
+            self.target_active_days[group_idx] = min(5, int(total)) if total > 0 else 0
         
         logger.info(f"📊 Target занять на день по групах: {self.target_lessons_per_day}")
+        logger.info(f"📊 Target активних днів по групах: {self.target_active_days}")
         
         # Список призначень
         self.assignments_list: List[Tuple[int, int, int, int, int]] = []
@@ -340,11 +322,40 @@ class TimetablingEnvironmentV2:
                 actual = self.group_classes_per_day[group_idx, day]
                 deviation = abs(actual - target)
                 total_deviation += deviation
+
+            # Окремо штрафуємо за дефіцит активних днів (повністю порожні дні).
+            _, _, active_day_deficit = self._get_group_active_day_stats(group_idx)
+            if active_day_deficit > 0:
+                total_deviation += active_day_deficit * 2.0
         
         # Нормалізуємо
         max_deviation = self.n_groups * 5 * 5  # Максимальне теоретичне відхилення
         score = 1.0 - (total_deviation / max(max_deviation, 1))
         return max(0.0, min(1.0, score))
+
+    def _get_group_active_day_stats(self, group_idx: int) -> Tuple[int, int, int]:
+        """
+        Повертає статистику активних днів для групи.
+
+        Returns:
+            (active_days, expected_active_days, active_day_deficit)
+        """
+        day_loads = self.group_classes_per_day[group_idx]
+        active_days = int(np.sum(day_loads > 0))
+        expected_active_days = int(self.target_active_days[group_idx])
+        active_day_deficit = max(0, expected_active_days - active_days)
+        return active_days, expected_active_days, active_day_deficit
+
+    def _group_max_day_deviation(self, group_idx: int) -> float:
+        """
+        Повертає максимальне відхилення денного навантаження від target.
+        """
+        target = float(self.target_lessons_per_day[group_idx])
+        if target <= 0:
+            return 0.0
+
+        day_loads = self.group_classes_per_day[group_idx].astype(np.float32)
+        return float(np.max(np.abs(day_loads - target)))
 
     def step(self, action: Tuple[int, int, int, int, int]) -> Tuple[np.ndarray, float, bool, Dict]:
         """
@@ -406,21 +417,6 @@ class TimetablingEnvironmentV2:
                 reward += self.REWARD_BALANCED_DAY * self.n_groups
                 logger.info(f"✅ Розклад ідеально збалансовано!")
 
-            # Додатковий штраф, якщо група отримала менше мінімуму занять.
-            min_weekly_penalty = 0.0
-            for g_idx in range(self.n_groups):
-                weekly_total = int(np.sum(self.group_classes_per_day[g_idx]))
-                if weekly_total < self.MIN_WEEKLY_LESSONS_PER_GROUP:
-                    missing = self.MIN_WEEKLY_LESSONS_PER_GROUP - weekly_total
-                    min_weekly_penalty += abs(self.PENALTY_BELOW_MIN_WEEKLY) * missing
-
-            if min_weekly_penalty > 0:
-                reward -= min_weekly_penalty
-                logger.warning(
-                    f"⚠️ Частина груп має менше {self.MIN_WEEKLY_LESSONS_PER_GROUP} занять/тиждень. "
-                    f"Penalty: -{min_weekly_penalty:.2f}"
-                )
-            
             logger.info(f"✅ Розклад повністю сформовано! Reward: {reward:.2f}")
         
         # Логування балансу кожні 20 кроків
@@ -449,22 +445,17 @@ class TimetablingEnvironmentV2:
             True якщо max_deviation <= MAX_DAY_DEVIATION для всіх груп
         """
         for group_idx in range(self.n_groups):
-            day_loads = self.group_classes_per_day[group_idx]
-            target = self.target_lessons_per_day[group_idx]
-            
-            if target == 0:
+            target = float(self.target_lessons_per_day[group_idx])
+
+            if target <= 0:
                 continue
-            
-            # Перевіряємо лише непорожні дні
-            non_zero_days = day_loads[day_loads > 0]
-            if len(non_zero_days) == 0:
-                continue
-            
-            max_load = np.max(day_loads)
-            min_load = np.min(day_loads[day_loads > 0]) if len(non_zero_days) > 0 else 0
-            
-            # Максимальне відхилення між днями
-            if max_load - min_load > self.MAX_DAY_DEVIATION + 1:
+
+            active_days, expected_active_days, active_day_deficit = self._get_group_active_day_stats(group_idx)
+            if expected_active_days > 0 and active_day_deficit > 0:
+                return False
+
+            # Допускаємо невеликий запас для дробового target.
+            if self._group_max_day_deviation(group_idx) > self.MAX_DAY_DEVIATION + 0.5:
                 return False
         
         return True
@@ -488,6 +479,12 @@ class TimetablingEnvironmentV2:
                 deviation = abs(day_loads[day] - target)
                 if deviation > self.MAX_DAY_DEVIATION:
                     total_penalty += self.DAY_BALANCE_BETA * (deviation - self.MAX_DAY_DEVIATION)
+
+            # Штраф за дефіцит активних днів (повністю порожні дні).
+            _, _, active_day_deficit = self._get_group_active_day_stats(group_idx)
+            if active_day_deficit > 0:
+                total_penalty += self.EMPTY_DAY_BETA * active_day_deficit
+                total_penalty += abs(self.PENALTY_EMPTY_DAY_AT_END) * active_day_deficit
         
         return -total_penalty  # Негативне значення = штраф
     
@@ -499,11 +496,17 @@ class TimetablingEnvironmentV2:
             day_loads = self.group_classes_per_day[group_idx].tolist()
             variance = float(np.var(day_loads))
             target = float(self.target_lessons_per_day[group_idx])
+            active_days, expected_active_days, active_day_deficit = self._get_group_active_day_stats(group_idx)
+            max_deviation = self._group_max_day_deviation(group_idx)
             stats[group.code] = {
                 "day_loads": day_loads,
                 "variance": variance,
                 "target": target,
-                "max_deviation": int(max(day_loads) - min(day_loads)) if sum(day_loads) > 0 else 0
+                "max_deviation": round(max_deviation, 2),
+                "active_days": active_days,
+                "target_active_days": expected_active_days,
+                "active_day_deficit": active_day_deficit,
+                "empty_days": int(sum(1 for value in day_loads if value == 0)),
             }
         return stats
     
@@ -568,8 +571,15 @@ class TimetablingEnvironmentV2:
         # === БАЛАНСУВАННЯ ДЕННОГО НАВАНТАЖЕННЯ ===
         day = self.timeslot_days[timeslot_idx]
         classes_today = self.group_classes_per_day[group_idx, day]
+        day_loads = self.group_classes_per_day[group_idx]
         target = self.target_lessons_per_day[group_idx]
         period = int(self.timeslot_periods[timeslot_idx])
+        _, _, active_day_deficit = self._get_group_active_day_stats(group_idx)
+
+        temp_loads = day_loads.copy()
+        temp_loads[day] += 1
+        empty_days_before = int(np.sum(day_loads == 0))
+        empty_days_after = int(np.sum(temp_loads == 0))
         
         # Штраф за перевищення target + допустиме відхилення
         if classes_today >= target + self.MAX_DAY_DEVIATION:
@@ -579,6 +589,17 @@ class TimetablingEnvironmentV2:
         min_day_load = np.min(self.group_classes_per_day[group_idx])
         if classes_today == min_day_load:
             reward += self.REWARD_BALANCED_DAY
+
+        # Пріоритет - закривати порожні дні, якщо група ще має дефіцит активних днів.
+        if active_day_deficit > 0:
+            if classes_today == 0:
+                reward += self.REWARD_FILL_EMPTY_DAY
+            else:
+                reward += self.PENALTY_SKIP_EMPTY_DAY
+
+        # Додатковий бонус, якщо після дії кількість порожніх днів зменшується.
+        if empty_days_after < empty_days_before:
+            reward += self.REWARD_FILL_EMPTY_DAY * (empty_days_before - empty_days_after)
         
         # Бонус якщо близько до target
         if abs(classes_today - target) <= self.MAX_DAY_DEVIATION:
@@ -604,10 +625,8 @@ class TimetablingEnvironmentV2:
         # === VARIANCE PENALTY (INCREMENTAL) ===
         # Обчислюємо як змінюється variance після цього призначення
         current_variance = np.var(self.group_classes_per_day[group_idx])
-        
+
         # Симулюємо новий стан
-        temp_loads = self.group_classes_per_day[group_idx].copy()
-        temp_loads[day] += 1
         new_variance = np.var(temp_loads)
         
         # Штраф якщо variance зростає
@@ -629,11 +648,6 @@ class TimetablingEnvironmentV2:
         if not has_hard_conflict:
             reward += self.REWARD_VALID_ASSIGNMENT
 
-        # М'який бонус для груп, які ще нижче мінімуму 10 занять/тиждень.
-        weekly_total = int(np.sum(self.group_classes_per_day[group_idx]))
-        if weekly_total < self.MIN_WEEKLY_LESSONS_PER_GROUP:
-            reward += 0.5
-        
         return reward
 
     @staticmethod
@@ -673,6 +687,10 @@ class TimetablingEnvironmentV2:
             # Variance check
             if np.var(day_loads) > self.VARIANCE_THRESHOLD:
                 violations += 1
+
+            # Дефіцит активних днів (повністю порожні дні при очікуваному навантаженні).
+            _, _, active_day_deficit = self._get_group_active_day_stats(group_idx)
+            violations += active_day_deficit
 
             # "Вікна" в межах дня для групи
             for day in range(5):
@@ -740,6 +758,7 @@ class TimetablingEnvironmentV2:
         target = self.target_lessons_per_day[group_idx]
         current_loads = self.group_classes_per_day[group_idx]
         min_load = np.min(current_loads)
+        _, _, active_day_deficit = self._get_group_active_day_stats(group_idx)
         
         def priority(action):
             _, teacher_idx, _, classroom_idx, timeslot_idx = action
@@ -753,6 +772,13 @@ class TimetablingEnvironmentV2:
             # Бонус за додавання в день з мінімальним навантаженням
             if day_load == min_load:
                 score -= 100  # Великий бонус (менше = краще)
+
+            # Якщо є дефіцит активних днів - форсуємо заповнення порожніх днів.
+            if active_day_deficit > 0:
+                if day_load == 0:
+                    score -= 180
+                else:
+                    score += 70
             
             # Штраф за перевищення target
             if day_load >= target:
@@ -894,18 +920,18 @@ class TimetablingEnvironmentV2:
     def _find_most_imbalanced_group(self) -> Optional[int]:
         """Знаходить групу з найбільшим дисбалансом."""
         worst_idx = None
-        worst_imbalance = 0
+        worst_imbalance = 0.0
         
         for group_idx in range(self.n_groups):
             day_loads = self.group_classes_per_day[group_idx]
             if np.sum(day_loads) == 0:
                 continue
-            
-            max_load = np.max(day_loads)
-            min_load = np.min(day_loads[day_loads > 0]) if np.any(day_loads > 0) else 0
-            imbalance = max_load - min_load
-            
-            if imbalance > self.MAX_DAY_DEVIATION and imbalance > worst_imbalance:
+
+            _, _, active_day_deficit = self._get_group_active_day_stats(group_idx)
+            max_deviation = self._group_max_day_deviation(group_idx)
+            imbalance = float(active_day_deficit) * 2.0 + max(0.0, max_deviation - self.MAX_DAY_DEVIATION)
+
+            if imbalance > 0 and imbalance > worst_imbalance:
                 worst_imbalance = imbalance
                 worst_idx = group_idx
         
@@ -919,12 +945,23 @@ class TimetablingEnvironmentV2:
             True якщо вдалося переmістити
         """
         day_loads = self.group_classes_per_day[group_idx]
+        _, expected_active_days, active_day_deficit = self._get_group_active_day_stats(group_idx)
         
-        # Знаходимо найбільш та найменш завантажені дні
-        overloaded_day = np.argmax(day_loads)
-        underloaded_day = np.argmin(day_loads)
+        # Знаходимо найбільш завантажений день
+        overloaded_day = int(np.argmax(day_loads))
+
+        # Якщо є дефіцит активних днів - пріоритет віддаємо повністю порожнім дням.
+        if active_day_deficit > 0:
+            zero_days = np.where(day_loads == 0)[0]
+            if len(zero_days) > 0:
+                underloaded_day = int(max(zero_days, key=lambda d: self._count_free_slots_for_group_day(group_idx, int(d))))
+            else:
+                underloaded_day = int(np.argmin(day_loads))
+        else:
+            underloaded_day = int(np.argmin(day_loads))
         
-        if day_loads[overloaded_day] - day_loads[underloaded_day] <= self.MAX_DAY_DEVIATION:
+        max_deviation = self._group_max_day_deviation(group_idx)
+        if active_day_deficit == 0 and max_deviation <= self.MAX_DAY_DEVIATION + 0.5:
             return False  # Вже збалансовано
         
         # Шукаємо заняття для переміщення з overloaded_day
@@ -950,8 +987,12 @@ class TimetablingEnvironmentV2:
                 temp_loads[overloaded_day] -= 1
                 temp_loads[underloaded_day] += 1
                 new_variance = np.var(temp_loads)
+                old_active_days = int(np.sum(day_loads > 0))
+                new_active_days = int(np.sum(temp_loads > 0))
+                old_active_day_deficit = max(0, expected_active_days - old_active_days)
+                new_active_day_deficit = max(0, expected_active_days - new_active_days)
                 
-                if new_variance >= old_variance:
+                if new_active_day_deficit >= old_active_day_deficit and new_variance >= old_variance:
                     continue  # Не погіршуємо баланс
                 
                 # Виконуємо переміщення
@@ -1013,6 +1054,16 @@ class TimetablingEnvironmentV2:
                     return (teacher_idx, classroom_idx, ts_idx)
         
         return None
+
+    def _count_free_slots_for_group_day(self, group_idx: int, target_day: int) -> int:
+        """Рахує кількість вільних таймслотів для групи у конкретний день."""
+        free_slots = 0
+        for ts_idx in range(self.n_timeslots):
+            if self.timeslot_days[ts_idx] != target_day:
+                continue
+            if self.group_schedule[group_idx, ts_idx] == 0:
+                free_slots += 1
+        return free_slots
     
     def _calculate_total_variance(self) -> float:
         """Обчислює загальну variance по всіх групах."""
@@ -1029,10 +1080,14 @@ class TimetablingEnvironmentV2:
             day_loads = self.group_classes_per_day[group_idx]
             target = self.target_lessons_per_day[group_idx]
             variance = np.var(day_loads)
-            max_dev = int(np.max(day_loads) - np.min(day_loads[day_loads > 0])) if np.any(day_loads > 0) else 0
-            
-            status = "✅" if max_dev <= self.MAX_DAY_DEVIATION else "⚠️"
-            logger.info(f"   {status} {group.code}: {day_loads.tolist()}, target={target:.1f}, var={variance:.2f}, max_dev={max_dev}")
+            max_dev = self._group_max_day_deviation(group_idx)
+            active_days, expected_active_days, _ = self._get_group_active_day_stats(group_idx)
+
+            status = "✅" if (max_dev <= self.MAX_DAY_DEVIATION + 0.5 and active_days >= expected_active_days) else "⚠️"
+            logger.info(
+                f"   {status} {group.code}: {day_loads.tolist()}, target={target:.1f}, "
+                f"var={variance:.2f}, max_dev={max_dev:.2f}, active_days={active_days}/{expected_active_days}"
+            )
 
     def _find_best_balanced_slot(self, course_idx: int, group_idx: int) -> Optional[Tuple]:
         """
@@ -1101,6 +1156,7 @@ class TimetablingEnvironmentV2:
         day = self.timeslot_days[timeslot_idx]
         day_load = self.group_classes_per_day[group_idx, day]
         target = self.target_lessons_per_day[group_idx]
+        _, _, active_day_deficit = self._get_group_active_day_stats(group_idx)
         
         # === ГОЛОВНИЙ ПРІОРИТЕТ: баланс ===
         # Бонус за день з навантаженням нижче target
@@ -1110,6 +1166,13 @@ class TimetablingEnvironmentV2:
         # Штраф за перевищення target
         if day_load >= target:
             score -= 5 * (day_load - target + 1)
+
+        # Якщо є дефіцит активних днів - даємо пріоритет дням без занять.
+        if active_day_deficit > 0:
+            if day_load == 0:
+                score += 12.0
+            else:
+                score -= 6.0
         
         # Мінімізація variance
         temp_loads = self.group_classes_per_day[group_idx].copy()
@@ -1195,15 +1258,19 @@ class TimetablingEnvironmentV2:
             day_loads = self.group_classes_per_day[group_idx]
             target = self.target_lessons_per_day[group_idx]
             variance = float(np.var(day_loads))
-            non_zero = day_loads[day_loads > 0]
-            max_deviation = int(np.max(day_loads) - np.min(non_zero)) if len(non_zero) > 0 else 0
+            active_days, expected_active_days, active_day_deficit = self._get_group_active_day_stats(group_idx)
+            max_deviation = self._group_max_day_deviation(group_idx)
             
             balance_stats[group.code] = {
                 "day_loads": day_loads.tolist(),
                 "target_per_day": float(target),
                 "variance": variance,
-                "max_deviation": max_deviation,
-                "is_balanced": max_deviation <= self.MAX_DAY_DEVIATION
+                "max_deviation": round(max_deviation, 2),
+                "active_days": active_days,
+                "target_active_days": expected_active_days,
+                "active_day_deficit": active_day_deficit,
+                "empty_days": int(np.sum(day_loads == 0)),
+                "is_balanced": (max_deviation <= self.MAX_DAY_DEVIATION + 0.5) and (active_day_deficit == 0),
             }
         
         return {
@@ -1287,14 +1354,14 @@ class TimetablingEnvironmentV2:
             group = self.groups[group_idx]
             day_loads = self.group_classes_per_day[group_idx]
             target = self.target_lessons_per_day[group_idx]
-            
-            non_zero = day_loads[day_loads > 0]
-            if len(non_zero) == 0:
+
+            if np.sum(day_loads) == 0:
                 continue
-            
-            max_deviation = int(np.max(day_loads) - np.min(non_zero))
-            
-            if max_deviation <= self.MAX_DAY_DEVIATION:
+
+            active_days, expected_active_days, active_day_deficit = self._get_group_active_day_stats(group_idx)
+            max_deviation = self._group_max_day_deviation(group_idx)
+
+            if max_deviation <= self.MAX_DAY_DEVIATION + 0.5 and active_day_deficit == 0:
                 continue  # Група збалансована
             
             # Аналізуємо причини
@@ -1309,6 +1376,13 @@ class TimetablingEnvironmentV2:
             
             if underloaded_days:
                 reason_parts.append(f"Недовантажені дні: {', '.join(underloaded_days)}")
+
+            if active_day_deficit > 0:
+                empty_days = [days_names[d] for d in range(5) if day_loads[d] == 0]
+                if empty_days:
+                    reason_parts.append(
+                        f"Порожні дні: {', '.join(empty_days)} (active_days={active_days}/{expected_active_days})"
+                    )
             
             # Перевіряємо чому не можна переmістити
             for overloaded_day_idx in [d for d in range(5) if day_loads[d] > target + 1]:
@@ -1326,7 +1400,7 @@ class TimetablingEnvironmentV2:
                         )
             
             explanation = f"Група '{group.code}': навантаження по днях {day_loads.tolist()}, "
-            explanation += f"target={target:.1f}, max_dev={max_deviation}. "
+            explanation += f"target={target:.1f}, max_dev={max_deviation:.2f}, active_days={active_days}/{expected_active_days}. "
             explanation += "; ".join(reason_parts) if reason_parts else "Причина невідома"
             
             explanations.append(explanation)

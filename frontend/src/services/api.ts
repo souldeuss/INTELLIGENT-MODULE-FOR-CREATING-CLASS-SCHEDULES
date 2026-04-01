@@ -17,6 +17,8 @@ export const createCourse = (data: any) => api.post("/courses", data);
 export const updateCourse = (id: number, data: any) =>
   api.put(`/courses/${id}`, data);
 export const deleteCourse = (id: number) => api.delete(`/courses/${id}`);
+export const exportCoursesCsv = () =>
+  api.get("/courses/export/csv", { responseType: "blob" });
 
 // ==================== TEACHERS ====================
 export const getTeachers = () => api.get("/teachers");
@@ -24,6 +26,8 @@ export const createTeacher = (data: any) => api.post("/teachers", data);
 export const updateTeacher = (id: number, data: any) =>
   api.put(`/teachers/${id}`, data);
 export const deleteTeacher = (id: number) => api.delete(`/teachers/${id}`);
+export const exportTeachersCsv = () =>
+  api.get("/teachers/export/csv", { responseType: "blob" });
 
 // ==================== GROUPS ====================
 export const getGroups = () => api.get("/groups");
@@ -31,6 +35,8 @@ export const createGroup = (data: any) => api.post("/groups", data);
 export const updateGroup = (id: number, data: any) =>
   api.put(`/groups/${id}`, data);
 export const deleteGroup = (id: number) => api.delete(`/groups/${id}`);
+export const exportGroupsCsv = () =>
+  api.get("/groups/export/csv", { responseType: "blob" });
 
 // ==================== CLASSROOMS ====================
 export const getClassrooms = () => api.get("/classrooms");
@@ -38,6 +44,8 @@ export const createClassroom = (data: any) => api.post("/classrooms", data);
 export const updateClassroom = (id: number, data: any) =>
   api.put(`/classrooms/${id}`, data);
 export const deleteClassroom = (id: number) => api.delete(`/classrooms/${id}`);
+export const exportClassroomsCsv = () =>
+  api.get("/classrooms/export/csv", { responseType: "blob" });
 
 // ==================== TIMESLOTS ====================
 export const getTimeslots = () => api.get("/timeslots");
@@ -161,6 +169,9 @@ export const scheduleService = {
 
   downloadScheduleFile: (filename: string) =>
     api.get(`/schedule/files/${filename}/download`, { responseType: "blob" }),
+
+  exportLessonsCsv: () =>
+    api.get("/schedule/export/lessons/csv", { responseType: "blob" }),
 
   // Версіонування
   createVersion: (name: string, description?: string) =>
@@ -397,6 +408,24 @@ export interface Dataset100PresetStatusResponse {
   model_version?: string | null;
 }
 
+export interface DatasetDimensionsResponse {
+  dataset_name: string;
+  current_db: {
+    state_dim: number;
+    action_dim: number;
+    raw_action_dim: number;
+  };
+  dataset: {
+    found: boolean;
+    manifest_path: string;
+    sample_case: string | null;
+    state_dim: number | null;
+    action_dim: number | null;
+    raw_action_dim: number | null;
+    error?: string | null;
+  };
+}
+
 export interface ModelTrainingCreateRequest {
   iterations?: number;
   seed?: number;
@@ -408,6 +437,15 @@ export interface ModelTrainingCreateRequest {
   promote?: boolean;
   regenerate_dataset?: boolean;
   iterations_mode?: "total" | "per-case";
+  learning_rate?: number;
+  gamma?: number;
+  epsilon?: number;
+}
+
+export interface HyperparameterUpdateRequest {
+  parameter: "learning_rate" | "gamma" | "epsilon" | "gae_lambda" | "entropy_coef" | "value_coef";
+  value: number;
+  reason?: string;
 }
 
 export interface ModelAdaptRequest {
@@ -514,6 +552,9 @@ export const trainingService = {
   createModelTraining: (payload?: ModelTrainingCreateRequest) =>
     api.post<Dataset100PresetStatusResponse>("/training/models/create", payload || {}),
 
+  updateHyperparameter: (payload: HyperparameterUpdateRequest) =>
+    api.post<{ status: string; message: string; will_apply_on: string }>("/training/hyperparameters", payload),
+
   getModelTrainingJobs: () =>
     api.get<{ jobs: Dataset100PresetStatusResponse[] }>("/training/models/create/jobs"),
 
@@ -534,6 +575,11 @@ export const trainingService = {
 
   stopModelAdaptation: (jobId: string) =>
     api.post<Dataset100PresetStatusResponse>(`/training/models/adapt/stop/${jobId}`),
+
+  getDatasetDimensions: (datasetName: string) =>
+    api.get<DatasetDimensionsResponse>("/training/dataset-dimensions", {
+      params: { dataset_name: datasetName },
+    }),
 
   getStatus: () => api.get<TrainingStatusResponse>("/training/status"),
 

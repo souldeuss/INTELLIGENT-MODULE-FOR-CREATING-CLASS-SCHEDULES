@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   Box,
   Paper,
@@ -22,6 +22,9 @@ import {
   Stack,
   MenuItem,
   TextField,
+  FormControlLabel,
+  Switch,
+  CircularProgress,
   Card,
   CardContent,
   Grid,
@@ -35,6 +38,8 @@ import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
 import SchoolIcon from "@mui/icons-material/School";
 import AutoFixHighIcon from "@mui/icons-material/AutoFixHigh";
+import UploadFileIcon from "@mui/icons-material/UploadFile";
+import DownloadIcon from "@mui/icons-material/Download";
 import PersonIcon from "@mui/icons-material/Person";
 import GroupIcon from "@mui/icons-material/Group";
 import AssignmentIcon from "@mui/icons-material/Assignment";
@@ -72,12 +77,81 @@ interface Assignment {
   group_code?: string;
 }
 
+interface AutoAssignTeacherStat {
+  teacher: string;
+  hours: number;
+  max_hours: number;
+  utilization: number;
+}
+
+interface AutoAssignGroupStat {
+  group: string;
+  year: number;
+  assigned_hours: number;
+  target_hours: number;
+  missing_hours: number;
+}
+
+interface AutoAssignResponse {
+  message: string;
+  assignments_created: number;
+  teacher_stats: AutoAssignTeacherStat[];
+  group_stats: AutoAssignGroupStat[];
+  groups_below_target: number;
+  requested_min_weekly_lessons: number;
+  unresolved_group_ids: number[];
+}
+
+interface AssignmentImportResponse {
+  message: string;
+  rows_total: number;
+  rows_imported: number;
+  teacher_links_created: number;
+  group_links_created: number;
+  duplicates_skipped: number;
+  ignored_schedule_fields_rows: number;
+  errors: string[];
+  warnings: string[];
+}
+
+const getFilenameFromDisposition = (
+  contentDisposition: string | undefined,
+  fallbackName: string
+) => {
+  if (!contentDisposition) {
+    return fallbackName;
+  }
+
+  const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    return decodeURIComponent(utf8Match[1]);
+  }
+
+  const basicMatch = contentDisposition.match(/filename="?([^";]+)"?/i);
+  return basicMatch?.[1] || fallbackName;
+};
+
 const CourseAssignments: React.FC = () => {
   const [courses, setCourses] = useState<Course[]>([]);
   const [teachers, setTeachers] = useState<Teacher[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [autoDialogOpen, setAutoDialogOpen] = useState(false);
+  const [autoAssigning, setAutoAssigning] = useState(false);
+  const [importingCsv, setImportingCsv] = useState(false);
+  const [exportingCsv, setExportingCsv] = useState(false);
+  const [autoSettings, setAutoSettings] = useState({
+    min_weekly_lessons_per_group: 10,
+    teachers_per_course: 2,
+    max_groups_per_course: 4,
+    strict_teacher_load: true,
+  });
+  const [lastAutoAssignResult, setLastAutoAssignResult] =
+    useState<AutoAssignResponse | null>(null);
+  const [lastImportResult, setLastImportResult] =
+    useState<AssignmentImportResponse | null>(null);
+  const importFileInputRef = useRef<HTMLInputElement | null>(null);
   const [formData, setFormData] = useState({
     course_id: 0,
     teacher_id: 0,
@@ -154,24 +228,120 @@ const CourseAssignments: React.FC = () => {
   };
 
   const handleAutoAssign = async () => {
-    if (
-      window.confirm(
-        "AI автоматично призначить курси викладачам та групам на основі департаментів, року навчання та складності. Існуючі призначення будуть видалені. Продовжити?"
-      )
-    ) {
-      try {
-        const response = await api.post("/schedule/assignments/auto");
-        showSnackbar(
-          `${response.data.message}. Створено ${response.data.assignments_created} призначень`,
-          "success"
-        );
-        loadData();
-      } catch (error: any) {
-        showSnackbar(
-          error.response?.data?.detail || "Помилка автопризначення",
-          "error"
-        );
-      }
+    setAutoAssigning(true);
+    try {
+      const response = await api.post<AutoAssignResponse>(
+        "/schedule/assignments/auto",
+        null,
+        {
+          params: autoSettings,
+        }
+      );
+
+      const result = response.data;
+      setLastAutoAssignResult(result);
+      setAutoDialogOpen(false);
+
+      showSnackbar(
+        `${result.message}. Створено ${result.assignments_created} призначень`,
+        result.groups_below_target > 0 ? "info" : "success"
+      );
+      loadData();
+    } catch (error: any) {
+      showSnackbar(
+        error.response?.data?.detail || "Помилка автопризначення",
+        "error"
+      );
+    } finally {
+      setAutoAssigning(false);
+    }
+  };
+
+  const handleOpenImportPicker = () => {
+    if (importingCsv) {
+      return;
+    }
+    importFileInputRef.current?.click();
+  };
+
+  const handleImportAssignmentsCsv = async (
+    event: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    try {
+      setImportingCsv(true);
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await api.post<AssignmentImportResponse>(
+        "/schedule/assignments/import/csv",
+        formData,
+        {
+          headers: {
+            "Content-Type": "multipart/form-data",
+          },
+        }
+      );
+
+      const result = response.data;
+      setLastImportResult(result);
+
+      const successMessage =
+        `${result.message}. Імпортовано ${result.rows_imported}/${result.rows_total} рядків.`;
+      const severity = result.errors.length > 0 ? "info" : "success";
+      showSnackbar(successMessage, severity);
+
+      loadData();
+    } catch (error: any) {
+      const detail = error.response?.data?.detail;
+      showSnackbar(
+        typeof detail === "string" ? detail : "Помилка імпорту призначень",
+        "error"
+      );
+    } finally {
+      setImportingCsv(false);
+      event.target.value = "";
+    }
+  };
+
+  const handleExportAssignmentsCsv = async () => {
+    try {
+      setExportingCsv(true);
+      const response = await api.get("/schedule/assignments/export/csv", {
+        responseType: "blob",
+      });
+
+      const fallbackName = `assignments_${new Date().toISOString().slice(0, 10)}.csv`;
+      const filename = getFilenameFromDisposition(
+        response.headers["content-disposition"],
+        fallbackName
+      );
+
+      const blob =
+        response.data instanceof Blob
+          ? response.data
+          : new Blob([response.data], { type: "text/csv;charset=utf-8;" });
+
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.click();
+      window.URL.revokeObjectURL(url);
+
+      showSnackbar("CSV експорт призначень виконано", "success");
+    } catch (error: any) {
+      const detail = error.response?.data?.detail;
+      showSnackbar(
+        typeof detail === "string" ? detail : "Помилка експорту призначень",
+        "error"
+      );
+    } finally {
+      setExportingCsv(false);
     }
   };
 
@@ -208,6 +378,13 @@ const CourseAssignments: React.FC = () => {
     totalAssignments: assignments.length,
   };
 
+  const topUnderfilledGroups = lastAutoAssignResult
+    ? [...lastAutoAssignResult.group_stats]
+        .filter((g) => g.missing_hours > 0)
+        .sort((a, b) => b.missing_hours - a.missing_hours)
+        .slice(0, 5)
+    : [];
+
   return (
     <Box sx={{ p: 3 }}>
       <Box
@@ -231,8 +408,24 @@ const CourseAssignments: React.FC = () => {
         <Stack direction="row" spacing={2}>
           <Button
             variant="outlined"
+            startIcon={exportingCsv ? <CircularProgress size={16} /> : <DownloadIcon />}
+            onClick={handleExportAssignmentsCsv}
+            disabled={exportingCsv}
+          >
+            Експорт призначень CSV
+          </Button>
+          <Button
+            variant="outlined"
+            startIcon={importingCsv ? <CircularProgress size={16} /> : <UploadFileIcon />}
+            onClick={handleOpenImportPicker}
+            disabled={importingCsv}
+          >
+            Імпорт призначень CSV
+          </Button>
+          <Button
+            variant="outlined"
             startIcon={<AutoFixHighIcon />}
-            onClick={handleAutoAssign}
+            onClick={() => setAutoDialogOpen(true)}
             disabled={
               courses.length === 0 ||
               teachers.length === 0 ||
@@ -256,6 +449,14 @@ const CourseAssignments: React.FC = () => {
           </Button>
         </Stack>
       </Box>
+
+      <input
+        ref={importFileInputRef}
+        type="file"
+        accept=".csv,text/csv"
+        onChange={handleImportAssignmentsCsv}
+        style={{ display: "none" }}
+      />
 
       {/* Statistics Cards */}
       <Grid container spacing={2} sx={{ mb: 3 }}>
@@ -307,6 +508,63 @@ const CourseAssignments: React.FC = () => {
           {courses.length === 0 && " Додайте курси."}
           {teachers.length === 0 && " Додайте викладачів."}
           {groups.length === 0 && " Додайте групи."}
+        </Alert>
+      )}
+
+      {lastImportResult && (
+        <Alert
+          severity={lastImportResult.errors.length > 0 ? "warning" : "success"}
+          sx={{ mb: 3 }}
+        >
+          CSV-імпорт призначень: оброблено {lastImportResult.rows_total} рядків, успішно {" "}
+          {lastImportResult.rows_imported}. Додано зв'язків курс-викладач: {" "}
+          {lastImportResult.teacher_links_created}, курс-група: {lastImportResult.group_links_created}. {" "}
+          Дублікати пропущено: {lastImportResult.duplicates_skipped}.
+          {lastImportResult.warnings.length > 0 && (
+            <Box sx={{ mt: 1 }}>
+              <Typography variant="body2" fontWeight={600}>
+                Попередження:
+              </Typography>
+              <Typography variant="body2">
+                {lastImportResult.warnings.slice(0, 3).join(" | ")}
+              </Typography>
+            </Box>
+          )}
+          {lastImportResult.errors.length > 0 && (
+            <Box sx={{ mt: 1 }}>
+              <Typography variant="body2" fontWeight={600}>
+                Помилки рядків:
+              </Typography>
+              <Typography variant="body2">
+                {lastImportResult.errors.slice(0, 3).join(" | ")}
+              </Typography>
+            </Box>
+          )}
+        </Alert>
+      )}
+
+      {lastAutoAssignResult && (
+        <Alert
+          severity={
+            lastAutoAssignResult.groups_below_target > 0 ? "warning" : "success"
+          }
+          sx={{ mb: 3 }}
+        >
+          AI-призначення: {lastAutoAssignResult.assignments_created} зв'язків курс-група. 
+          Груп нижче цілі ({lastAutoAssignResult.requested_min_weekly_lessons} год/тижд): {" "}
+          {lastAutoAssignResult.groups_below_target}.
+          {topUnderfilledGroups.length > 0 && (
+            <Box sx={{ mt: 1 }}>
+              <Typography variant="body2" fontWeight={600}>
+                Найбільший недобір:
+              </Typography>
+              <Typography variant="body2">
+                {topUnderfilledGroups
+                  .map((g) => `${g.group} (-${g.missing_hours} год)`)
+                  .join(", ")}
+              </Typography>
+            </Box>
+          )}
         </Alert>
       )}
 
@@ -475,6 +733,98 @@ const CourseAssignments: React.FC = () => {
       </Grid>
 
       {/* Dialog */}
+      <Dialog
+        open={autoDialogOpen}
+        onClose={() => !autoAssigning && setAutoDialogOpen(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>AI-призначення курсів</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            Алгоритм спочатку намагається забезпечити мінімум занять на тиждень для кожної групи,
+            після чого підбирає викладачів з урахуванням навантаження.
+          </Typography>
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            Існуючі призначення будуть видалені та створені заново.
+          </Alert>
+          <TextField
+            margin="dense"
+            label="Мінімум занять/тиждень на групу"
+            type="number"
+            fullWidth
+            inputProps={{ min: 1, max: 40 }}
+            value={autoSettings.min_weekly_lessons_per_group}
+            onChange={(e) =>
+              setAutoSettings({
+                ...autoSettings,
+                min_weekly_lessons_per_group: Number(e.target.value || 10),
+              })
+            }
+          />
+          <TextField
+            margin="dense"
+            label="Викладачів на курс"
+            type="number"
+            fullWidth
+            inputProps={{ min: 1, max: 3 }}
+            value={autoSettings.teachers_per_course}
+            onChange={(e) =>
+              setAutoSettings({
+                ...autoSettings,
+                teachers_per_course: Number(e.target.value || 2),
+              })
+            }
+          />
+          <TextField
+            margin="dense"
+            label="Максимум груп на курс"
+            type="number"
+            fullWidth
+            inputProps={{ min: 1, max: 20 }}
+            value={autoSettings.max_groups_per_course}
+            onChange={(e) =>
+              setAutoSettings({
+                ...autoSettings,
+                max_groups_per_course: Number(e.target.value || 4),
+              })
+            }
+          />
+          <FormControlLabel
+            sx={{ mt: 1 }}
+            control={
+              <Switch
+                checked={autoSettings.strict_teacher_load}
+                onChange={(e) =>
+                  setAutoSettings({
+                    ...autoSettings,
+                    strict_teacher_load: e.target.checked,
+                  })
+                }
+              />
+            }
+            label="Строго враховувати max_hours_per_week викладачів"
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() => setAutoDialogOpen(false)}
+            disabled={autoAssigning}
+          >
+            Скасувати
+          </Button>
+          <Button
+            onClick={handleAutoAssign}
+            variant="contained"
+            color="secondary"
+            disabled={autoAssigning}
+            startIcon={autoAssigning ? <CircularProgress size={16} /> : <AutoFixHighIcon />}
+          >
+            {autoAssigning ? "Виконується..." : "Запустити AI-призначення"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       <Dialog
         open={dialogOpen}
         onClose={handleCloseDialog}
