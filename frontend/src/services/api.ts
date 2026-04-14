@@ -194,6 +194,7 @@ export interface ScheduleScoreResponse {
   group_conflicts: number;
   gap_penalty: number;
   distribution: number;
+  occupancy_rate: number;
   details:
     | string
     | {
@@ -261,6 +262,44 @@ export const historyService = {
 };
 
 // ==================== STATISTICS ====================
+export interface TimetableCompletionStats {
+  scheduled_count: number;
+  total_required_periods: number;
+  unscheduled_count: number;
+  completion_rate: number;
+}
+
+export interface TimetableDayDistributionItem {
+  day: string;
+  day_index: number;
+  periods_count: number;
+}
+
+export interface TimetableGroupUsageItem {
+  group_id: number;
+  group_code: string;
+  assigned_periods: number;
+  available_periods: number;
+  usage_rate: number;
+}
+
+export interface TimetableTeacherUsageItem {
+  teacher_id: number;
+  teacher_name: string;
+  assigned_periods: number;
+  max_periods: number;
+  usage_rate: number;
+}
+
+export interface TimetableInsightsResponse {
+  generated_at: string;
+  scheduled_lessons: number;
+  completion: TimetableCompletionStats;
+  lesson_distribution_by_day: TimetableDayDistributionItem[];
+  class_period_usage: TimetableGroupUsageItem[];
+  teacher_period_usage: TimetableTeacherUsageItem[];
+}
+
 export const statsService = {
   getDashboardStats: () => api.get("/stats/dashboard"),
 
@@ -269,6 +308,9 @@ export const statsService = {
   getUtilizationStats: () => api.get("/stats/utilization"),
 
   getDistributionStats: () => api.get("/stats/distribution"),
+
+  getTimetableInsights: () =>
+    api.get<TimetableInsightsResponse>("/stats/timetable-insights"),
 };
 
 // ==================== TRAINING DASHBOARD ====================

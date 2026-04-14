@@ -1,7 +1,8 @@
 """Statistics and AI API endpoints."""
+from collections import defaultdict
+from datetime import datetime
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
-from sqlalchemy import func
 
 from ..models.database import (
     Course,
@@ -13,8 +14,40 @@ from ..models.database import (
     ScheduleGeneration,
 )
 from ..core.database_session import get_db
+from ..schemas.schemas import (
+    TimetableCompletionStats,
+    TimetableDayDistributionItem,
+    TimetableGroupUsageItem,
+    TimetableInsightsResponse,
+    TimetableTeacherUsageItem,
+)
 
 router = APIRouter()
+
+WEEK_DAYS_UA = ["Понеділок", "Вівторок", "Середа", "Четвер", "П'ятниця"]
+
+
+def _safe_percent(numerator: int, denominator: int) -> float:
+    if denominator <= 0:
+        return 0.0
+    return (numerator / denominator) * 100.0
+
+
+def _calculate_total_required_periods(courses, groups) -> int:
+    """Mirror generation logic: course-group pairs multiplied by hours_per_week."""
+    if not courses or not groups:
+        return 0
+
+    all_group_ids = [group.id for group in groups]
+    total_required_periods = 0
+
+    for course in courses:
+        hours_per_week = course.hours_per_week or 2
+        assigned_group_ids = [group.id for group in course.groups]
+        group_ids = assigned_group_ids if assigned_group_ids else all_group_ids
+        total_required_periods += hours_per_week * len(group_ids)
+
+    return total_required_periods
 
 
 @router.get("/dashboard")
@@ -203,3 +236,95 @@ def get_distribution_stats(db: Session = Depends(get_db)):
         "by_day": day_distribution,
         "by_period": period_distribution,
     }
+
+
+@router.get("/timetable-insights", response_model=TimetableInsightsResponse)
+def get_timetable_insights(db: Session = Depends(get_db)):
+    """Отримати зведені інсайти поточного активного розкладу."""
+    courses = db.query(Course).all()
+    groups = db.query(StudentGroup).all()
+    teachers = db.query(Teacher).all()
+    timeslots = db.query(Timeslot).all()
+    scheduled_classes = db.query(ScheduledClass).all()
+
+    scheduled_count = len(scheduled_classes)
+    total_required_periods = _calculate_total_required_periods(courses, groups)
+    unscheduled_count = max(total_required_periods - scheduled_count, 0)
+    completion_rate = round(_safe_percent(scheduled_count, total_required_periods), 1)
+
+    active_timeslots_count = len([slot for slot in timeslots if slot.is_active])
+    timeslot_by_id = {slot.id: slot for slot in timeslots}
+
+    day_counts = {day_index: 0 for day_index in range(5)}
+    group_counts = defaultdict(int)
+    teacher_counts = defaultdict(int)
+
+    for scheduled_class in scheduled_classes:
+        group_counts[scheduled_class.group_id] += 1
+        teacher_counts[scheduled_class.teacher_id] += 1
+
+        timeslot = timeslot_by_id.get(scheduled_class.timeslot_id)
+        if timeslot and 0 <= timeslot.day_of_week < 5:
+            day_counts[timeslot.day_of_week] += 1
+
+    lesson_distribution_by_day = [
+        TimetableDayDistributionItem(
+            day=WEEK_DAYS_UA[day_index],
+            day_index=day_index,
+            periods_count=day_counts[day_index],
+        )
+        for day_index in range(5)
+    ]
+
+    class_period_usage = []
+    for group in groups:
+        assigned_periods = int(group_counts[group.id])
+        usage_rate = round(_safe_percent(assigned_periods, active_timeslots_count), 1)
+        class_period_usage.append(
+            TimetableGroupUsageItem(
+                group_id=group.id,
+                group_code=group.code,
+                assigned_periods=assigned_periods,
+                available_periods=active_timeslots_count,
+                usage_rate=usage_rate,
+            )
+        )
+
+    class_period_usage.sort(
+        key=lambda item: (item.usage_rate, item.assigned_periods, item.group_code),
+        reverse=True,
+    )
+
+    teacher_period_usage = []
+    for teacher in teachers:
+        assigned_periods = int(teacher_counts[teacher.id])
+        max_periods = max(int(teacher.max_hours_per_week or 0), 0)
+        usage_rate = round(_safe_percent(assigned_periods, max_periods), 1)
+        teacher_period_usage.append(
+            TimetableTeacherUsageItem(
+                teacher_id=teacher.id,
+                teacher_name=teacher.full_name,
+                assigned_periods=assigned_periods,
+                max_periods=max_periods,
+                usage_rate=usage_rate,
+            )
+        )
+
+    teacher_period_usage.sort(
+        key=lambda item: (item.usage_rate, item.assigned_periods, item.teacher_name),
+        reverse=True,
+    )
+
+    return TimetableInsightsResponse(
+        generated_at=datetime.utcnow(),
+        scheduled_lessons=scheduled_count,
+        completion=TimetableCompletionStats(
+            scheduled_count=scheduled_count,
+            total_required_periods=total_required_periods,
+            unscheduled_count=unscheduled_count,
+            completion_rate=completion_rate,
+        ),
+        lesson_distribution_by_day=lesson_distribution_by_day,
+        class_period_usage=class_period_usage,
+        teacher_period_usage=teacher_period_usage,
+    )

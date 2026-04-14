@@ -270,3 +270,41 @@ class AnalyticsResponse(BaseModel):
     hard_constraint_violations: int
     soft_constraint_violations: int
     average_score: float
+
+
+class TimetableCompletionStats(BaseModel):
+    scheduled_count: int
+    total_required_periods: int
+    unscheduled_count: int
+    completion_rate: float
+
+
+class TimetableDayDistributionItem(BaseModel):
+    day: str
+    day_index: int
+    periods_count: int
+
+
+class TimetableGroupUsageItem(BaseModel):
+    group_id: int
+    group_code: str
+    assigned_periods: int
+    available_periods: int
+    usage_rate: float
+
+
+class TimetableTeacherUsageItem(BaseModel):
+    teacher_id: int
+    teacher_name: str
+    assigned_periods: int
+    max_periods: int
+    usage_rate: float
+
+
+class TimetableInsightsResponse(BaseModel):
+    generated_at: datetime
+    scheduled_lessons: int
+    completion: TimetableCompletionStats
+    lesson_distribution_by_day: List[TimetableDayDistributionItem]
+    class_period_usage: List[TimetableGroupUsageItem]
+    teacher_period_usage: List[TimetableTeacherUsageItem]

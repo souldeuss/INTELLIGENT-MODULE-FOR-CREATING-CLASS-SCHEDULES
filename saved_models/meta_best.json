@@ -1,7 +1,7 @@
 {
-  "saved_at": "2026-03-30T19:16:41.897116",
+  "saved_at": "2026-04-02T00:02:49.024516",
   "model_file": "actor_critic_best.pt",
-  "state_dim": 1930,
+  "state_dim": 1200,
   "action_dim": 4096,
   "selection_strategy": "combined_score",
   "score_weights": {
@@ -10,9 +10,9 @@
     "hard_violation_penalty": 25.0,
     "soft_violation_penalty": 5.0
   },
-  "best_reward": -2100.1201171875,
+  "best_reward": 257.49993896484375,
   "best_completion": 1.0,
-  "best_model_score": -2000.1201171875,
+  "best_model_score": 357.49993896484375,
   "hard_violations": 0,
   "soft_violations": 0
 }

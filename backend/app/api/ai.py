@@ -13,6 +13,7 @@ from ..models.database import (
     ScheduleGeneration,
 )
 from ..core.database_session import get_db
+from .score_utils import calculate_schedule_score
 
 router = APIRouter()
 
@@ -21,91 +22,18 @@ router = APIRouter()
 def get_schedule_score(db: Session = Depends(get_db)):
     """Отримати оцінку поточного розкладу."""
     scheduled_classes = db.query(ScheduledClass).all()
-    
-    if not scheduled_classes:
-        return {
-            "overall": 0,
-            "teacher_conflicts": 100,
-            "room_conflicts": 100,
-            "group_conflicts": 100,
-            "gap_penalty": 100,
-            "distribution": 100,
-            "details": "Розклад порожній"
-        }
-    
-    total_classes = len(scheduled_classes)
-    
-    # Підрахунок конфліктів
-    timeslot_classes = {}
-    for sc in scheduled_classes:
-        if sc.timeslot_id not in timeslot_classes:
-            timeslot_classes[sc.timeslot_id] = []
-        timeslot_classes[sc.timeslot_id].append(sc)
-    
-    teacher_conflicts = 0
-    room_conflicts = 0
-    group_conflicts = 0
-    
-    for classes in timeslot_classes.values():
-        if len(classes) < 2:
-            continue
-        
-        teacher_ids = [c.teacher_id for c in classes]
-        teacher_conflicts += len(teacher_ids) - len(set(teacher_ids))
-        
-        room_ids = [c.classroom_id for c in classes]
-        room_conflicts += len(room_ids) - len(set(room_ids))
-        
-        group_ids = [c.group_id for c in classes]
-        group_conflicts += len(group_ids) - len(set(group_ids))
-    
-    # Оцінка місткості
-    capacity_issues = 0
-    for sc in scheduled_classes:
-        group = db.query(StudentGroup).filter(StudentGroup.id == sc.group_id).first()
-        classroom = db.query(Classroom).filter(Classroom.id == sc.classroom_id).first()
-        if group and classroom and group.students_count > classroom.capacity:
-            capacity_issues += 1
-    
-    # Оцінка розподілу по днях (чим рівномірніше - тим краще)
-    days = [0] * 5
-    for sc in scheduled_classes:
-        timeslot = db.query(Timeslot).filter(Timeslot.id == sc.timeslot_id).first()
-        if timeslot and 0 <= timeslot.day_of_week < 5:
-            days[timeslot.day_of_week] += 1
-    
-    avg_per_day = total_classes / 5
-    distribution_variance = sum((d - avg_per_day) ** 2 for d in days) / 5
-    max_variance = (total_classes ** 2) / 5
-    distribution_score = 100 * (1 - min(distribution_variance / max_variance, 1)) if max_variance > 0 else 100
-    
-    # Розрахунок scores (100 = ідеально, 0 = погано)
-    teacher_score = max(0, 100 - (teacher_conflicts * 20))
-    room_score = max(0, 100 - (room_conflicts * 20))
-    group_score = max(0, 100 - (group_conflicts * 20))
-    gap_score = max(0, 100 - (capacity_issues * 10))
-    
-    # Загальний score (зважене середнє)
-    overall = (
-        teacher_score * 0.25 +
-        room_score * 0.25 +
-        group_score * 0.25 +
-        gap_score * 0.15 +
-        distribution_score * 0.10
-    )
-    
+
+    score = calculate_schedule_score(db, scheduled_classes)
+
     return {
-        "overall": round(overall, 1),
-        "teacher_conflicts": round(teacher_score, 1),
-        "room_conflicts": round(room_score, 1),
-        "group_conflicts": round(group_score, 1),
-        "gap_penalty": round(gap_score, 1),
-        "distribution": round(distribution_score, 1),
-        "details": {
-            "total_classes": total_classes,
-            "hard_violations": teacher_conflicts + room_conflicts + group_conflicts,
-            "soft_violations": capacity_issues,
-        }
+        "overall": score["overall"],
+        "teacher_conflicts": score["teacher_conflicts"],
+        "room_conflicts": score["room_conflicts"],
+        "group_conflicts": score["group_conflicts"],
+        "gap_penalty": score["gap_penalty"],
+        "distribution": score["distribution"],
+        "occupancy_rate": score["occupancy_rate"],
+        "details": score["details"],
     }
 
 

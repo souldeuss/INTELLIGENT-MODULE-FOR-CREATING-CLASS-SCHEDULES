@@ -29,6 +29,7 @@ import {
   LinearProgress,
 } from "@mui/material";
 import {
+  BarChart as BarChartIcon,
   ViewWeek as WeekIcon,
   Today as DayIcon,
   CalendarMonth as MonthIcon,
@@ -47,6 +48,7 @@ import {
   Group as GroupIcon,
   Person as PersonIcon,
   Room as RoomIcon,
+  GridView as GridViewIcon,
   MoreVert as MoreIcon,
   Warning as WarningIcon,
   Info as InfoIcon,
@@ -55,6 +57,7 @@ import {
   getGroups,
   getTeachers,
   getClassrooms,
+  getTimeslots,
   getGroupTimetable,
   getTeacherTimetable,
   getClassroomTimetable,
@@ -71,6 +74,8 @@ import {
   aiService,
   ScheduleScoreResponse,
 } from "../services/api";
+import TimetableInsightsDialog from "./TimetableInsightsDialog";
+import AllGroupsTimetable from "./AllGroupsTimetable";
 
 interface ScheduledClass {
   id: number;
@@ -99,6 +104,13 @@ interface ViewFilter {
   name: string;
 }
 
+interface TimeslotItem {
+  id: number;
+  day_of_week: number;
+  period_number: number;
+  is_active: boolean;
+}
+
 const DAYS = ["Понеділок", "Вівторок", "Середа", "Четвер", "П'ятниця"];
 const PERIODS = [
   { number: 1, time: "08:30 - 09:15" },
@@ -114,10 +126,11 @@ const InteractiveTimetable: React.FC = () => {
   const [groups, setGroups] = useState<any[]>([]);
   const [teachers, setTeachers] = useState<any[]>([]);
   const [classrooms, setClassrooms] = useState<any[]>([]);
+  const [timeslots, setTimeslots] = useState<TimeslotItem[]>([]);
   const [schedule, setSchedule] = useState<ScheduledClass[]>([]);
 
   // View state
-  const [viewMode, setViewMode] = useState<"week" | "day">("week");
+  const [viewMode, setViewMode] = useState<"week" | "day" | "all_groups">("week");
   const [filter, setFilter] = useState<ViewFilter>({
     type: "group",
     id: 0,
@@ -162,6 +175,7 @@ const InteractiveTimetable: React.FC = () => {
   const [scheduleScore, setScheduleScore] = useState<ScheduleScoreResponse | null>(null);
   const [scoreLoading, setScoreLoading] = useState(false);
   const [scoreError, setScoreError] = useState<string | null>(null);
+  const [insightsDialogOpen, setInsightsDialogOpen] = useState(false);
 
   // Notifications
   const [snackbar, setSnackbar] = useState<{
@@ -181,22 +195,30 @@ const InteractiveTimetable: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (filter.id) {
+    if (viewMode === "all_groups") {
+      loadSchedule();
+    } else if (filter.id) {
       loadSchedule();
     }
-  }, [filter]);
+  }, [filter, viewMode, groups]);
 
   const loadData = async () => {
     try {
-      const [groupsRes, teachersRes, classroomsRes] = await Promise.all([
+      const [groupsRes, teachersRes, classroomsRes, timeslotsRes] = await Promise.all([
         getGroups(),
         getTeachers(),
         getClassrooms(),
+        getTimeslots(),
       ]);
 
       setGroups(groupsRes.data);
       setTeachers(teachersRes.data);
       setClassrooms(classroomsRes.data);
+      setTimeslots(
+        (timeslotsRes.data || []).filter(
+          (slot: TimeslotItem) => slot.is_active !== false
+        )
+      );
 
       // Set default filter
       if (groupsRes.data.length > 0) {
@@ -248,18 +270,35 @@ const InteractiveTimetable: React.FC = () => {
   const loadSchedule = async () => {
     try {
       let response;
-      switch (filter.type) {
-        case "group":
-          response = await getGroupTimetable(filter.id);
-          break;
-        case "teacher":
-          response = await getTeacherTimetable(filter.id);
-          break;
-        case "classroom":
-          response = await getClassroomTimetable(filter.id);
-          break;
+
+      // Load all groups' schedules for all_groups mode
+      if (viewMode === "all_groups") {
+        const allSchedules: ScheduledClass[] = [];
+        for (const group of groups) {
+          try {
+            const groupResponse = await getGroupTimetable(group.id);
+            allSchedules.push(...(groupResponse?.data || []));
+          } catch (error) {
+            console.error(`Failed to load schedule for group ${group.id}:`, error);
+          }
+        }
+        setSchedule(allSchedules);
+      } else {
+        // Load single entity schedule based on filter type
+        switch (filter.type) {
+          case "group":
+            response = await getGroupTimetable(filter.id);
+            break;
+          case "teacher":
+            response = await getTeacherTimetable(filter.id);
+            break;
+          case "classroom":
+            response = await getClassroomTimetable(filter.id);
+            break;
+        }
+        setSchedule(response?.data || []);
       }
-      setSchedule(response?.data || []);
+
       await loadScheduleScore();
     } catch (error) {
       console.error("Failed to load schedule:", error);
@@ -607,19 +646,40 @@ const InteractiveTimetable: React.FC = () => {
 
     if (!draggedClass) return;
 
-    // Find target timeslot
-    // In real implementation, you would look up timeslot by day and period
-    const targetTimeslotId = day * 6 + period; // Simplified calculation
+    const targetTimeslot = timeslots.find(
+      (slot) =>
+        slot.day_of_week === day &&
+        slot.period_number === period &&
+        slot.is_active !== false
+    );
+
+    if (!targetTimeslot) {
+      showNotification(
+        `Не знайдено таймслот для дня ${day + 1}, уроку ${period}`,
+        "error"
+      );
+      setDraggedClass(null);
+      return;
+    }
+
+    if (targetTimeslot.id === draggedClass.timeslot_id) {
+      setDraggedClass(null);
+      return;
+    }
 
     try {
       await updateScheduledClass(draggedClass.id, {
         class_id: draggedClass.id,
-        timeslot_id: targetTimeslotId,
+        timeslot_id: targetTimeslot.id,
       });
       await loadSchedule();
       showNotification("Заняття переміщено", "success");
-    } catch (error) {
-      showNotification("Помилка переміщення", "error");
+    } catch (error: any) {
+      const detail =
+        error?.response?.data?.detail ||
+        error?.message ||
+        "Помилка переміщення";
+      showNotification(String(detail), "error");
     }
 
     setDraggedClass(null);
@@ -756,48 +816,49 @@ const InteractiveTimetable: React.FC = () => {
           }}
         >
           {/* Filter Section */}
-          <Stack direction="row" spacing={2} alignItems="center">
-            <ToggleButtonGroup
-              value={filter.type}
-              exclusive
-              onChange={(_, value) =>
-                value && setFilter({ ...filter, type: value })
-              }
-              size="small"
-            >
-              <ToggleButton value="group">
-                <Tooltip title="По групах">
-                  <GroupIcon />
-                </Tooltip>
-              </ToggleButton>
-              <ToggleButton value="teacher">
-                <Tooltip title="По викладачах">
-                  <PersonIcon />
-                </Tooltip>
-              </ToggleButton>
-              <ToggleButton value="classroom">
-                <Tooltip title="По аудиторіях">
-                  <RoomIcon />
-                </Tooltip>
-              </ToggleButton>
-            </ToggleButtonGroup>
+          {viewMode !== "all_groups" && (
+            <Stack direction="row" spacing={2} alignItems="center">
+              <ToggleButtonGroup
+                value={filter.type}
+                exclusive
+                onChange={(_, value) =>
+                  value && setFilter({ ...filter, type: value })
+                }
+                size="small"
+              >
+                <ToggleButton value="group">
+                  <Tooltip title="По групах">
+                    <GroupIcon />
+                  </Tooltip>
+                </ToggleButton>
+                <ToggleButton value="teacher">
+                  <Tooltip title="По викладачах">
+                    <PersonIcon />
+                  </Tooltip>
+                </ToggleButton>
+                <ToggleButton value="classroom">
+                  <Tooltip title="По аудиторіях">
+                    <RoomIcon />
+                  </Tooltip>
+                </ToggleButton>
+              </ToggleButtonGroup>
 
-            <FormControl size="small" sx={{ minWidth: 200 }}>
-              <InputLabel>
-                {filter.type === "group"
-                  ? "Група"
-                  : filter.type === "teacher"
-                  ? "Викладач"
-                  : "Аудиторія"}
-              </InputLabel>
-              <Select
-                value={filter.id}
-                label={
-                  filter.type === "group"
+              <FormControl size="small" sx={{ minWidth: 200 }}>
+                <InputLabel>
+                  {filter.type === "group"
                     ? "Група"
                     : filter.type === "teacher"
                     ? "Викладач"
-                    : "Аудиторія"
+                    : "Аудиторія"}
+                </InputLabel>
+                <Select
+                  value={filter.id}
+                  label={
+                    filter.type === "group"
+                      ? "Група"
+                      : filter.type === "teacher"
+                      ? "Викладач"
+                      : "Аудиторія"
                 }
                 onChange={(e) => {
                   const id = Number(e.target.value);
@@ -827,7 +888,8 @@ const InteractiveTimetable: React.FC = () => {
                 ))}
               </Select>
             </FormControl>
-          </Stack>
+            </Stack>
+          )}
 
           {/* View Controls */}
           <Stack direction="row" spacing={1} alignItems="center">
@@ -876,7 +938,11 @@ const InteractiveTimetable: React.FC = () => {
             <ToggleButtonGroup
               value={viewMode}
               exclusive
-              onChange={(_, v) => v && setViewMode(v)}
+              onChange={(_, v) => {
+                if (v && (v === "week" || v === "day" || v === "all_groups")) {
+                  setViewMode(v);
+                }
+              }}
               size="small"
             >
               <ToggleButton value="week">
@@ -887,6 +953,11 @@ const InteractiveTimetable: React.FC = () => {
               <ToggleButton value="day">
                 <Tooltip title="Денний вигляд">
                   <DayIcon />
+                </Tooltip>
+              </ToggleButton>
+              <ToggleButton value="all_groups">
+                <Tooltip title="Усі групи">
+                  <GridViewIcon />
                 </Tooltip>
               </ToggleButton>
             </ToggleButtonGroup>
@@ -943,39 +1014,56 @@ const InteractiveTimetable: React.FC = () => {
                 <RefreshIcon />
               </IconButton>
             </Tooltip>
+
+            <Button
+              variant="outlined"
+              size="small"
+              startIcon={<BarChartIcon />}
+              onClick={() => setInsightsDialogOpen(true)}
+            >
+              Статистика
+            </Button>
           </Stack>
         </Box>
       </Paper>
 
       {/* Timetable Grid */}
-      <Paper sx={{ p: 2, overflow: "auto" }}>
-        <Box
-          sx={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            flexWrap: "wrap",
-            gap: 1,
-            mb: 1,
-          }}
-        >
-          <Typography
-            variant="h6"
-            sx={{ display: "flex", alignItems: "center", gap: 1 }}
+      {viewMode !== "all_groups" && (
+        <Paper sx={{ p: 2, overflow: "auto" }}>
+          <Box
+            sx={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              flexWrap: "wrap",
+              gap: 1,
+              mb: 1,
+            }}
           >
-            📅 Розклад: {filter.name}
-            <Chip size="small" label={`${schedule.length} занять`} />
-          </Typography>
+            <Typography
+              variant="h6"
+              sx={{ display: "flex", alignItems: "center", gap: 1 }}
+            >
+              📅 Розклад: {filter.name}
+              <Chip size="small" label={`${schedule.length} занять`} />
+            </Typography>
 
           <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
             {scoreLoading ? (
               <Chip size="small" label="Оцінка: ..." variant="outlined" />
             ) : scheduleScore ? (
-              <Chip
-                size="small"
-                color={getOverallScoreColor(scheduleScore.overall)}
-                label={`Оцінка: ${scheduleScore.overall.toFixed(1)}%`}
-              />
+              <>
+                <Chip
+                  size="small"
+                  color={getOverallScoreColor(scheduleScore.overall)}
+                  label={`Оцінка: ${scheduleScore.overall.toFixed(1)}%`}
+                />
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  label={`Заповненість: ${(scheduleScore.occupancy_rate * 100).toFixed(1)}%`}
+                />
+              </>
             ) : (
               <Chip size="small" label="Оцінка: Н/Д" variant="outlined" />
             )}
@@ -1117,6 +1205,58 @@ const InteractiveTimetable: React.FC = () => {
           ))}
         </Box>
       </Paper>
+      )}
+
+      {/* All Groups Timetable View */}
+      {viewMode === "all_groups" && (
+        <Box>
+          <Box
+            sx={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              flexWrap: "wrap",
+              gap: 1,
+              mb: 2,
+              px: 2,
+            }}
+          >
+            <Typography
+              variant="h6"
+              sx={{ display: "flex", alignItems: "center", gap: 1 }}
+            >
+              📅 Розклад: Усі групи
+              <Chip size="small" label={`${schedule.length} занять`} />
+            </Typography>
+          </Box>
+          <AllGroupsTimetable
+            zoom={zoom}
+            schedule={schedule}
+            onEditClass={(classItem) => {
+              setSelectedClass(classItem);
+              setEditDialog(true);
+            }}
+            onDeleteClass={async (classId) => {
+              const classItem = schedule.find((c) => c.id === classId);
+              if (classItem) {
+                await handleDelete(classItem);
+              }
+            }}
+            onLockToggle={async (classId, locked) => {
+              const classItem = schedule.find((c) => c.id === classId);
+              if (classItem) {
+                await lockScheduledClass(classId, locked);
+                await loadSchedule();
+                showNotification(
+                  locked ? "Заняття заблоковано" : "Заняття розблоковано",
+                  "success"
+                );
+              }
+            }}
+            onRefresh={loadSchedule}
+          />
+        </Box>
+      )}
 
       {/* Context Menu */}
       <Menu
@@ -1180,6 +1320,11 @@ const InteractiveTimetable: React.FC = () => {
       )}
 
       {/* Snackbar */}
+      <TimetableInsightsDialog
+        open={insightsDialogOpen}
+        onClose={() => setInsightsDialogOpen(false)}
+      />
+
       <Snackbar
         open={snackbar.open}
         autoHideDuration={3000}

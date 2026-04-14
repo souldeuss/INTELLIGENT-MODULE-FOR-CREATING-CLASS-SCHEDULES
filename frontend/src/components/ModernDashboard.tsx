@@ -146,8 +146,10 @@ const ModernDashboard: React.FC = () => {
         overall: 87.5,
         teacher_conflicts: 95,
         room_conflicts: 90,
+        group_conflicts: 88,
         gap_penalty: 82,
         distribution: 85,
+        occupancy_rate: 0.82,
       });
       setTrainingHistory([
         { episode: 1, reward: -50 },
@@ -217,6 +219,11 @@ const ModernDashboard: React.FC = () => {
   const ScoreCard: React.FC<{ score: any }> = ({ score }) => {
     if (!score) return null;
 
+    const occupancyPercent = Math.max(
+      0,
+      Math.min(100, (score.occupancy_rate ?? 0) * 100)
+    );
+
     const metrics = [
       {
         label: "Конфлікти викладачів",
@@ -233,6 +240,11 @@ const ModernDashboard: React.FC = () => {
         label: "Розподіл навантаження",
         value: score.distribution,
         color: "#9c27b0",
+      },
+      {
+        label: "Коефіцієнт заповненості",
+        value: occupancyPercent,
+        color: "#607d8b",
       },
     ];
 
